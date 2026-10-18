@@ -16,7 +16,7 @@ user-menu.yml
 *.log
 
 .env
-models/
+/models/
 logs/
 uploads/
 data/tmp/
