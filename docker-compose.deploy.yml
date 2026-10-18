@@ -1,0 +1,33 @@
+# 部署用 compose：API + 前端静态站点。
+# MySQL / Redis / Milvus 默认作为外部服务，通过 .env 指向；
+# 模型目录挂载到 /models，且不写入镜像。
+#
+# 服务器侧：
+#   export GHCR_OWNER=<github 用户名或组织>
+#   docker compose -f docker-compose.deploy.yml pull
+#   docker compose -f docker-compose.deploy.yml up -d
+
+services:
+  api:
+    image: ghcr.io/${GHCR_OWNER:-asktofit}/asktofit-api:${IMAGE_TAG:-latest}
+    env_file:
+      - .env
+    environment:
+      BGE_M3_PATH: /models/bge-m3
+      BGE_RERANKER_PATH: /models/bge-reranker-v2-m3
+      INTENT_MODEL_PATH: /models/intent-bert
+    volumes:
+      - ./models:/models:ro
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/${GHCR_OWNER:-asktofit}/asktofit-web:${IMAGE_TAG:-latest}
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+    restart: unless-stopped

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    env:
+      UV_DEFAULT_INDEX: https://pypi.org/simple
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --locked --group dev
+      - name: Run pytest
+        run: uv run python -m pytest tests/ -v
+
+  dataset:
+    name: Evaluation dataset
+    runs-on: ubuntu-latest
+    env:
+      UV_DEFAULT_INDEX: https://pypi.org/simple
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --locked --group dev
+      - name: Validate JSONL dataset
+        run: uv run python scripts/evaluate_rag.py --validate-dataset
+      - name: Assert dataset size and required fields
+        run: |
+          uv run python -c "
+          import json, pathlib
+          rows = [json.loads(line) for line in pathlib.Path('data/evaluation/qa_eval.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
+          assert len(rows) == 60, len(rows)
+          required = {'id', 'question', 'ground_truth', 'expected_doc_names', 'expected_sections', 'answerable', 'intent', 'tags'}
+          assert all(required <= set(row) for row in rows)
+          assert all(bool(row['answerable']) == bool(row['expected_doc_names']) for row in rows)
+          print(f'dataset sample check ok: {len(rows)}')
+          "
+
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run test
+      - run: npm run build
+
+  docker:
+    name: Docker build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            context: .
+            file: ./Dockerfile
+          - name: web
+            context: ./frontend
+            file: ./frontend/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          tags: asktofit-${{ matrix.name }}:ci
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
