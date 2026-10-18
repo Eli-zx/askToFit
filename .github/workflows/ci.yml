@@ -9,11 +9,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 不要设置 UV_DEFAULT_INDEX：uv.lock 记录的是 pyproject 的阿里云源，
+  # CI 覆盖默认源会被 --locked 判定为 lockfile 过期。
   backend:
     name: Backend tests
     runs-on: ubuntu-latest
-    env:
-      UV_DEFAULT_INDEX: https://pypi.org/simple
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -28,8 +28,6 @@ jobs:
   dataset:
     name: Evaluation dataset
     runs-on: ubuntu-latest
-    env:
-      UV_DEFAULT_INDEX: https://pypi.org/simple
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
