@@ -1,0 +1,226 @@
+/*
+ * AskToFit 设计令牌：静奢时装编辑部
+ * 亮色 = 暖骨白纸 + 墨色 + 酒红；暗色 = 炭黑 + 骨白 + 铜色。
+ * 所有页面只引用变量，不写死颜色，保证亮/暗主题一致。
+ */
+:root {
+  color-scheme: light;
+
+  /* 墨色层级 */
+  --atf-ink: #12110f;
+  --atf-ink-soft: #35302a;
+  --atf-muted: #6c6357;
+  --atf-bronze: #8a6a45;
+
+  /* 强调色：oxblood */
+  --atf-brand: #6f2a28;
+  --atf-brand-deep: #561f1e;
+  --atf-brand-soft: #efe3da;
+  --atf-on-brand: #fbf7ef;
+  --atf-brand-disabled: #c9ada4;
+  /* 主按钮：亮色用酒红实底，暗色用骨白实底，避免大面积红色过亮 */
+  --atf-cta-bg: #6f2a28;
+  --atf-cta-hover: #561f1e;
+  --atf-cta-ink: #fbf7ef;
+  --atf-cta-disabled: #c9ada4;
+
+  /* 辅助色，仅用于状态点与图表 */
+  --atf-violet: #9b7b5a;
+  --atf-mint: #5e7358;
+  --atf-peach: #b07a4a;
+
+  /* 纸面层级 */
+  --atf-bg: #f2eee6;
+  --atf-surface: #f8f4ec;
+  --atf-surface-raised: #fcf9f2;
+  --atf-line: rgba(18, 17, 15, 0.14);
+  --atf-line-strong: rgba(18, 17, 15, 0.28);
+  --atf-wash: rgba(18, 17, 15, 0.035);
+  --atf-th-bg: rgba(18, 17, 15, 0.045);
+  --atf-scroll-thumb: rgba(18, 17, 15, 0.22);
+  --atf-code-bg: #211c17;
+  --atf-code-ink: #efe6d8;
+
+  /* 登录页左侧编辑面板 */
+  --atf-story-bg: #1c1712;
+  --atf-story-ink: #f2eadf;
+  --atf-story-soft: rgba(244, 239, 230, 0.6);
+  --atf-story-faint: rgba(244, 239, 230, 0.45);
+  --atf-story-line: rgba(244, 239, 230, 0.2);
+  --atf-story-accent: #dc9a89;
+  --atf-story-card: rgba(244, 239, 230, 0.09);
+  --atf-story-card-line: rgba(244, 239, 230, 0.18);
+  --atf-story-bubble-bg: #f3ece1;
+  --atf-story-bubble-ink: #35302a;
+  --atf-story-bubble-line: rgba(18, 17, 15, 0.13);
+  --atf-story-dot: #9db58f;
+
+  /* 状态与标签色：低饱和，避免彩色胶囊感 */
+  --atf-placeholder: #a3988b;
+  --atf-overlay-strong: rgba(18, 17, 15, 0.55);
+  --atf-tone-blue: #3f5a6b;
+  --atf-tone-blue-bg: rgba(76, 100, 115, 0.12);
+  --atf-tone-gold: #8a6a1f;
+  --atf-tone-gold-bg: #f4ead2;
+  --atf-tone-gold-soft-bg: #fff8e8;
+  --atf-tone-red: #a33427;
+  --atf-tone-red-bg: #f6ddd6;
+  --atf-tone-pink: #8a4a56;
+  --atf-tone-pink-bg: #f3e1e1;
+  --atf-tone-teal: #3f6a63;
+  --atf-tone-teal-bg: #e3ece7;
+  --atf-tone-gray-bg: #ece6db;
+  --atf-tone-warning: #b15a1c;
+  --atf-tone-warning-bg: #fff1e4;
+  --atf-tone-mint-bg: rgba(94, 115, 88, 0.12);
+  --atf-tone-peach-bg: rgba(176, 122, 74, 0.13);
+  --atf-tone-mint-line: rgba(94, 115, 88, 0.35);
+  --atf-tone-blue-line: rgba(76, 100, 115, 0.3);
+  --atf-brand-line: rgba(111, 42, 40, 0.32);
+  --atf-brand-line-soft: rgba(111, 42, 40, 0.24);
+
+  /* 阴影只作极淡的层级暗示，不做漂浮卡片 */
+  --atf-shadow-sm: 0 1px 0 rgba(18, 17, 15, 0.05);
+  --atf-shadow-md: 0 12px 34px rgba(18, 17, 15, 0.09);
+  --atf-shadow-lg: 0 28px 70px rgba(18, 17, 15, 0.15);
+
+  --atf-radius-sm: 2px;
+  --atf-radius-md: 4px;
+  --atf-radius-lg: 6px;
+  --atf-header-height: 72px;
+  --atf-font-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC',
+    'STSong', 'SimSun', Georgia, 'Times New Roman', serif;
+  --atf-font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+
+  /* Element Plus：亮色 */
+  --el-color-primary: #6f2a28;
+  --el-color-primary-light-3: #96605d;
+  --el-color-primary-light-5: #b58a87;
+  --el-color-primary-light-7: #d3b8b3;
+  --el-color-primary-light-8: #e2cec8;
+  --el-color-primary-light-9: #f0e3de;
+  --el-color-primary-dark-2: #561f1e;
+  --el-border-radius-base: 3px;
+  --el-border-radius-small: 2px;
+  --el-border-color: rgba(18, 17, 15, 0.16);
+  --el-border-color-light: rgba(18, 17, 15, 0.11);
+  --el-border-color-lighter: rgba(18, 17, 15, 0.08);
+  --el-border-color-extra-light: rgba(18, 17, 15, 0.05);
+  --el-text-color-primary: #12110f;
+  --el-text-color-regular: #35302a;
+  --el-text-color-secondary: #6c6357;
+  --el-text-color-placeholder: #948a7d;
+  --el-bg-color: #fcf9f2;
+  --el-bg-color-page: #f2eee6;
+  --el-bg-color-overlay: #fcf9f2;
+  --el-fill-color-blank: #fcf9f2;
+  --el-fill-color-light: rgba(18, 17, 15, 0.04);
+  --el-fill-color-lighter: rgba(18, 17, 15, 0.025);
+  --el-fill-color: rgba(18, 17, 15, 0.06);
+  --el-mask-color: rgba(18, 17, 15, 0.45);
+  --el-font-family: 'Inter', 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei',
+    system-ui, sans-serif;
+}
+
+html.dark,
+html[data-theme='dark'] {
+  color-scheme: dark;
+
+  --atf-ink: #e8e3d9;
+  --atf-ink-soft: #c4bdb1;
+  /* 暗色次要字提亮一档，保证 9–10px 的元数据也能读清 */
+  --atf-muted: #ada496;
+  --atf-bronze: #b08a5a;
+
+  --atf-brand: #a34a42;
+  --atf-brand-deep: #c26a5e;
+  --atf-brand-soft: #2a1c18;
+  --atf-on-brand: #f5efe5;
+  --atf-brand-disabled: #5a3b38;
+  --atf-cta-bg: #e8e3d9;
+  --atf-cta-hover: #f5f0e6;
+  --atf-cta-ink: #12110f;
+  --atf-cta-disabled: #46433c;
+
+  --atf-violet: #b08a5a;
+  --atf-mint: #7d9474;
+  --atf-peach: #c08a55;
+
+  /* 暗色不是反相：纸面分三层暖炭，靠明度差而不是边框区分结构 */
+  --atf-bg: #0a0908;
+  --atf-surface: #15110e;
+  --atf-surface-raised: #1b1611;
+  --atf-line: rgba(232, 227, 217, 0.14);
+  --atf-line-strong: rgba(232, 227, 217, 0.3);
+  --atf-wash: rgba(232, 227, 217, 0.045);
+  --atf-th-bg: rgba(232, 227, 217, 0.06);
+  --atf-scroll-thumb: rgba(232, 227, 217, 0.24);
+  --atf-code-bg: #1d1b18;
+  --atf-code-ink: #e8e3d9;
+
+  /* 登录封面比表单区更暖、更亮一档，暗色下仍保留左右分栏 */
+  --atf-story-bg: #211a14;
+  --atf-story-ink: #e8e3d9;
+  --atf-story-soft: rgba(232, 227, 217, 0.6);
+  --atf-story-faint: rgba(232, 227, 217, 0.44);
+  --atf-story-line: rgba(232, 227, 217, 0.16);
+  --atf-story-accent: #c26a5e;
+  --atf-story-card: rgba(232, 227, 217, 0.07);
+  --atf-story-card-line: rgba(232, 227, 217, 0.16);
+  --atf-story-bubble-bg: #201d1a;
+  --atf-story-bubble-ink: #d8d2c6;
+  --atf-story-bubble-line: rgba(232, 227, 217, 0.14);
+  --atf-story-dot: #8aa17c;
+
+  --atf-placeholder: #7b7468;
+  --atf-overlay-strong: rgba(0, 0, 0, 0.66);
+  --atf-tone-blue: #8fa9b8;
+  --atf-tone-blue-bg: rgba(118, 150, 170, 0.14);
+  --atf-tone-gold: #c8a468;
+  --atf-tone-gold-bg: rgba(176, 138, 90, 0.14);
+  --atf-tone-gold-soft-bg: rgba(176, 138, 90, 0.1);
+  --atf-tone-red: #d98a80;
+  --atf-tone-red-bg: rgba(163, 74, 66, 0.18);
+  --atf-tone-pink: #c78f9a;
+  --atf-tone-pink-bg: rgba(138, 74, 86, 0.2);
+  --atf-tone-teal: #8fb8b0;
+  --atf-tone-teal-bg: rgba(63, 106, 99, 0.22);
+  --atf-tone-gray-bg: rgba(232, 227, 217, 0.08);
+  --atf-tone-warning: #d19a63;
+  --atf-tone-warning-bg: rgba(177, 90, 28, 0.16);
+  --atf-tone-mint-bg: rgba(125, 148, 116, 0.16);
+  --atf-tone-peach-bg: rgba(192, 138, 85, 0.14);
+  --atf-tone-mint-line: rgba(125, 148, 116, 0.42);
+  --atf-tone-blue-line: rgba(118, 150, 170, 0.4);
+  --atf-brand-line: rgba(195, 106, 94, 0.38);
+  --atf-brand-line-soft: rgba(195, 106, 94, 0.3);
+
+  --atf-shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --atf-shadow-md: 0 14px 36px rgba(0, 0, 0, 0.5);
+  --atf-shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.62);
+
+  /* Element Plus：暗色 */
+  --el-color-primary: #a34a42;
+  --el-color-primary-light-3: #b56c63;
+  --el-color-primary-light-5: #c79288;
+  --el-color-primary-light-7: #7a3b36;
+  --el-color-primary-light-8: #5f302c;
+  --el-color-primary-light-9: #2a1c18;
+  --el-color-primary-dark-2: #c26a5e;
+  --el-border-color: rgba(232, 227, 217, 0.18);
+  --el-border-color-light: rgba(232, 227, 217, 0.13);
+  --el-border-color-lighter: rgba(232, 227, 217, 0.09);
+  --el-border-color-extra-light: rgba(232, 227, 217, 0.06);
+  --el-text-color-primary: #e8e3d9;
+  --el-text-color-regular: #c4bdb1;
+  --el-text-color-secondary: #ada496;
+  --el-text-color-placeholder: #7b7468;
+  --el-bg-color: #1b1611;
+  --el-bg-color-page: #0a0908;
+  --el-bg-color-overlay: #201b15;
+  --el-fill-color-blank: #1b1611;
+  --el-fill-color-light: rgba(232, 227, 217, 0.06);
+  --el-fill-color-lighter: rgba(232, 227, 217, 0.04);
+  --el-fill-color: rgba(232, 227, 217, 0.09);
+  --el-mask-color: rgba(0, 0, 0, 0.66);
+}

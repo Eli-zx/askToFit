@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AskToFit · RAG 系统流程（详细版）</title>
+<style>
+  :root{
+    --bg:#16181d; --panel:#1e2128; --panel2:#23262f; --line:#3a3f4b;
+    --txt:#e8eaf0; --sub:#9aa1b0; --hint:#6b7180;
+    --purple:#534AB7; --purple-bg:rgba(83,74,183,.16); --purple-line:#7F77DD;
+    --teal:#0F6E56; --teal-bg:rgba(15,110,86,.18); --teal-line:#1D9E75;
+    --blue:#185FA5; --blue-bg:rgba(24,95,165,.18); --blue-line:#378ADD;
+    --amber:#854F0B; --amber-bg:rgba(133,79,11,.20); --amber-line:#EF9F27;
+    --coral:#993C1D; --coral-bg:rgba(153,60,29,.20); --coral-line:#F0997B;
+    --pink:#993556; --pink-bg:rgba(153,53,86,.18); --pink-line:#ED93B1;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;font-size:13px;line-height:1.55;padding:28px 32px}
+  h1{font-size:22px;font-weight:600;margin-bottom:4px}
+  .meta{color:var(--sub);font-size:12px;margin-bottom:22px}
+  .meta b{color:var(--txt);font-weight:500}
+  .canvas{display:grid;grid-template-columns:400px 1fr 330px;gap:18px;align-items:start}
+  .region{border:1px solid var(--line);border-radius:14px;padding:16px 16px 20px;background:var(--panel)}
+  .region>h2{font-size:15px;font-weight:600;margin-bottom:2px;display:flex;align-items:center;gap:8px}
+  .region>.desc{color:var(--sub);font-size:12px;margin-bottom:14px}
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);color:var(--sub)}
+  .flow{display:flex;flex-direction:column;align-items:stretch}
+  .node{border-radius:9px;padding:8px 12px;border:1px solid;font-size:12.5px}
+  .node b{display:block;font-size:13px;font-weight:600;margin-bottom:1px}
+  .node span{color:inherit;opacity:.82;font-size:12px}
+  .n-io{background:var(--blue-bg);border-color:var(--blue-line);color:#B5D4F4}
+  .n-proc{background:var(--purple-bg);border-color:var(--purple-line);color:#CECBF6}
+  .n-model{background:var(--teal-bg);border-color:var(--teal-line);color:#9FE1CB}
+  .n-store{background:var(--amber-bg);border-color:var(--amber-line);color:#FAC775}
+  .n-risk{background:var(--coral-bg);border-color:var(--coral-line);color:#F5C4B3}
+  .n-eval{background:var(--pink-bg);border-color:var(--pink-line);color:#F4C0D1}
+  .arrow{align-self:center;color:var(--hint);font-size:14px;line-height:1;padding:2px 0;position:relative}
+  .arrow i{font-style:normal;font-size:10.5px;color:var(--sub);background:var(--panel);padding:0 6px;border:1px solid var(--line);border-radius:12px;margin-left:6px;vertical-align:2px}
+  .branch{display:grid;gap:8px;margin:4px 0}
+  .branch.two{grid-template-columns:1fr 1fr}
+  .decision{text-align:center;border:1px dashed var(--amber-line);background:var(--amber-bg);color:#FAC775;border-radius:9px;padding:6px 10px;font-weight:600;font-size:12.5px}
+  .decision span{display:block;font-weight:400;font-size:11.5px;opacity:.85}
+  .lbl{font-size:10.5px;color:var(--sub);text-align:center;margin-bottom:4px}
+  .parallel{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .join-note{text-align:center;color:var(--hint);font-size:11px;padding:2px 0}
+  .bottom{display:grid;grid-template-columns:1.15fr 1.3fr 1fr;gap:18px;margin-top:18px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:600;color:var(--txt)}
+  td{color:var(--sub)}
+  td b{color:var(--txt);font-weight:500}
+  .pill{display:inline-block;font-size:11px;border-radius:4px;padding:0 5px;margin-right:4px;border:1px solid}
+  .p-t{color:#9FE1CB;border-color:var(--teal-line)}
+  .p-p{color:#CECBF6;border-color:var(--purple-line)}
+  .p-a{color:#FAC775;border-color:var(--amber-line)}
+  .p-c{color:#F5C4B3;border-color:var(--coral-line)}
+  .footer{margin-top:16px;color:var(--hint);font-size:11.5px;text-align:center}
+  @media print{
+    body{background:#fff;color:#222;padding:10mm}
+    .region,.node,th,td{break-inside:avoid}
+    .region{background:#fff}
+    .meta,.lbl,.join-note,.arrow i{color:#555}
+    .arrow{color:#999}
+    h1{color:#111}
+  }
+</style>
+</head>
+<body>
+
+<h1>AskToFit · RAG 系统流程（详细版）</h1>
+<div class="meta">技术栈：<b>FastAPI（异步）+ Vue 3 + MySQL + Milvus + Redis</b> ｜ 本地模型：<b>BGE-M3 · BGE-Reranker · 意图 BERT · RapidOCR</b> ｜ LLM：<b>DeepSeek / DashScope（OpenAI 兼容，SSE 流式）</b> ｜ 输出形式对照《RAG 系统流程(详细版).pdf》整理</div>
+
+<div class="canvas">
+
+  <!-- ============ 离线知识库 ============ -->
+  <div class="region">
+    <h2><span class="tag">离线</span>知识库入库流水线</h2>
+    <div class="desc">ingestion.py · parsers.py · mineru_parser.py · text_splitter.py · dedup.py —— 目标：解析 → 判重 → 父子分块 → 向量化 → 双写安全切换</div>
+    <div class="flow">
+      <div class="node n-io"><b>文档上传</b><span>PDF / PPT / PPTX / DOC / DOCX / MD / PNG / JPG（≤50MB，扩展名+大小校验，UUID 落盘 uploads/）</span></div>
+      <div class="arrow">↓</div>
+      <div class="parallel">
+        <div class="node n-proc"><b>标准解析</b><span>parsers.py：PyMuPDF / python-pptx / python-docx / Markdown；内嵌图片与扫描页走 RapidOCR；旧版 .doc 按 LibreOffice→antiword→OLE 降级</span></div>
+        <div class="node n-proc"><b>深度解析 MinerU（可选）</b><span>独立 Docker 容器，单并发、900s 超时自动清理；失败标记 failed 且不静默降级</span></div>
+      </div>
+      <div class="arrow">↓</div>
+      <div class="node n-model"><b>正文判重</b><span>NFKC 归一化 → 去空白/标点/Markdown/HTML/URL → SHA-256 + SimHash</span></div>
+      <div class="arrow">↓</div>
+      <div class="decision">相似度 ≥ 0.90（DOC_DEDUP_SIMILARITY）？<span>仅改格式 → skipped ｜ 相似 → 同文档新版本 ｜ 否则独立新文档</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-proc"><b>父子分块</b><span>父块 800–1200 字（按标题/章节/页码聚合，保留完整上下文）→ 父块内切子块 300–500 字用于向量检索</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-model"><b>BGE-M3 混合编码</b><span>稠密向量 1024 维（语义）+ 稀疏向量（关键词）；入库受并发信号量控制</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-store"><b>双写：Milvus + MySQL</b><span>每个知识库一个 Milvus collection；分块/父块/文档版本写 MySQL；分块级哈希+SimHash 去重</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-store"><b>安全版本切换</b><span>新版本全部写入成功后才把旧版本 is_current=false；任一步失败旧版本继续可检索；同时失效 BM25 索引与 Redis 缓存</span></div>
+    </div>
+  </div>
+
+  <!-- ============ 在线问答 ============ -->
+  <div class="region">
+    <h2><span class="tag">在线</span>RAG 问答流水线（SSE：status / meta / delta / done / error）</h2>
+    <div class="desc">chat.py（编排）· intent.py · rag.py · query_strategy.py · retrieval.py · llm.py —— 每个阶段记录耗时日志与 Prometheus 指标</div>
+    <div class="flow">
+      <div class="node n-io"><b>用户提问</b><span>JWT 认证 → Redis ZSet 滑动窗口限流 → 图形验证码（注册/登录）</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-model"><b>① 意图识别</b><span>本地 BERT 分类（Redis 缓存结果）→ 失败兜底关键词规则；输出 intent + confidence + source</span></div>
+      <div class="arrow">↓</div>
+      <div class="decision">greeting / 无知识库？<span>是 → 跳过检索直接生成 ｜ 否 → 继续</span></div>
+      <div class="arrow">↓<i>否</i></div>
+      <div class="node n-proc"><b>② 查询改写</b><span>命中指代线索（这个/它/刚刚/哪款/来着…）、≤6 字极短碎片，或 7–10 字且不像完整疑问句 → LLM 改写为独立查询（温度 0）；带“吗/怎么/多少？”的完整短问题保持独立；模型没改写时用上一轮完整问题拼接兜底</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-proc"><b>③ 检索策略规划</b><span>direct 直接检索 ｜ HyDE 假设答案 ｜ 子查询分解 ｜ backtrack 回溯；规则优先、可选 LLM，计划写 Redis 缓存；失败回退 direct</span></div>
+      <div class="arrow">↓</div>
+      <div class="decision">检索结果缓存命中？<span>Redis key = 查询+KB+策略+BM25模式 指纹</span></div>
+      <div class="arrow">↓<i>未命中</i></div>
+      <div class="parallel">
+        <div class="node n-model"><b>向量召回（多路）</b><span>每个 (查询 × KB检索模式) 一路：Milvus 稠密 / 稠密+稀疏 hybrid；查询向量有 embedding 缓存</span></div>
+        <div class="node n-model"><b>BM25 词法召回</b><span>进程内按 KB 构建索引（中文 uni/bigram + 英文）；模式 off / fallback 兜底 / fuse 参与融合</span></div>
+      </div>
+      <div class="join-note">↓ RRF 加权融合（保留各路原始分数，量纲不混用）↓</div>
+      <div class="node n-proc"><b>④ 融合与粗过滤</b><span>BM25-only 命中按查询词覆盖度过滤；向量路全失败时 BM25 兜底（埋点 asktofit_bm25_fallback_total）</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-model"><b>⑤ BGE-Reranker 精排</b><span>rerank_query 始终用改写后原问题（防 HyDE 丢约束）；按阈值过滤；失败按配置 drop 或降级 vector 分</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-proc"><b>⑥ 父块扩展 + 三级去重</b><span>过滤非 current/已删除分块 → 命中子块用父块正文补全上下文 → 父块UID / 归一化哈希 / SimHash 去重</span></div>
+      <div class="arrow">↓</div>
+      <div class="decision">合格资料为空？<span>是 → 记录知识缺口（意图/分数/检索模式）照常回答</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-proc"><b>⑦ 组装完整提示词</b><span>system（角色+回答规则+意图标签+回答策略+&lt;knowledge&gt; 资料块，字符预算截断）+ 裁剪历史（轮数+字符双预算）+ 当前问题</span></div>
+      <div class="arrow">↓</div>
+      <div class="decision">答案缓存命中？<span>命中 → 按 32 字切片回放 SSE，直接 done</span></div>
+      <div class="arrow">↓<i>未命中</i></div>
+      <div class="node n-model"><b>⑧ LLM 流式生成</b><span>DeepSeek / DashScope；并发信号量 + 熔断 + 重试；记录 TTFT（首包耗时）</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-io"><b>SSE 推送 + 落库</b><span>delta 逐段推送 → done（含 sources 出处）；助手消息+会话计数写 MySQL；答案写 Redis（TTL）；取消/失败时已生成部分照常落库</span></div>
+    </div>
+  </div>
+
+  <!-- ============ 支撑体系 ============ -->
+  <div class="region">
+    <h2><span class="tag">支撑</span>存储与基础设施</h2>
+    <div class="desc">四类存储各司其职 + 横切运维设施</div>
+    <div class="flow">
+      <div class="node n-store"><b>MySQL（事实源）</b><span>用户 / 会话 / 消息 / 知识库 / 文档版本 / 父子分块 / 知识缺口 / 评测记录</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-store"><b>Milvus（向量）</b><span>每 KB 一个 collection；稠密+稀疏混合检索；upsert/delete 随分块编辑同步</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-store"><b>Redis（缓存与安全）</b><span>答案缓存 / 检索缓存 / embedding 缓存 / 意图缓存 / 策略缓存 + 限流 ZSet + 图形验证码</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-store"><b>本地磁盘</b><span>uploads/ 原文 · logs/ 日志 · models/ 模型权重（Docker 外置挂载）</span></div>
+    </div>
+    <div style="height:14px"></div>
+    <div class="flow">
+      <div class="node n-proc"><b>启动期（lifespan）</b><span>建库 + 轻量 DDL 升级 → 同步管理员 → 后台预热三个本地模型 → 会话归档维护协程</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-proc"><b>可观测</b><span>请求ID全链路日志（含检索分阶段耗时 embed/vector/bm25/rerank）· Prometheus 指标端点 /metrics</span></div>
+      <div class="arrow">↓</div>
+      <div class="node n-proc"><b>前端 Vue 3</b><span>ChatView（SSE 流渲染/Markdown/出处展示）· 知识库管理 · 分块预览编辑 · 评测看板 · 知识缺口看板</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 底部三栏 ============ -->
+<div class="bottom">
+
+  <div class="region">
+    <h2><span class="tag">评估</span>RAG 效果评估体系</h2>
+    <div class="desc">evaluation.py · evaluation_store.py · routes/evaluation.py · 前端 EvaluationView</div>
+    <table>
+      <tr><th>维度</th><th>指标 / 方法</th></tr>
+      <tr><td><b>检索质量</b></td><td>MRR（平均倒数排名）、HitRate、Recall@K、关键词覆盖率</td></tr>
+      <tr><td><b>生成质量</b></td><td>RAGAS 样本转换：上下文相关性、上下文召回率、答案相关性、忠实度</td></tr>
+      <tr><td><b>评测流程</b></td><td>评测集管理 → 批量运行 → 按分组聚合 → 多版本对比（eval_run 落库）</td></tr>
+      <tr><td><b>线上回流</b></td><td>知识缺口看板：召回为空的问题按意图/分数聚类，反哺知识库补录</td></tr>
+    </table>
+  </div>
+
+  <div class="region">
+    <h2><span class="tag">韧性</span>降级与兜底策略对照</h2>
+    <div class="desc">每一环都有明确的失败路径，不做静默降级</div>
+    <table>
+      <tr><th>环节</th><th>失败时的行为</th></tr>
+      <tr><td><b>意图 BERT</b></td><td>关键词规则兜底（source 字段可溯源）</td></tr>
+      <tr><td><b>查询改写</b></td><td>用原问题；指代问题拼接上一轮完整问题</td></tr>
+      <tr><td><b>策略规划</b></td><td>回退 direct 直接检索</td></tr>
+      <tr><td><b>Embedding / 向量库</b></td><td>BM25 fallback 接管（埋点统计原因）</td></tr>
+      <tr><td><b>Reranker</b></td><td>熔断计数；按配置 drop 本轮资料或降级用向量分</td></tr>
+      <tr><td><b>Redis</b></td><td>缓存全部跳过实时计算；限流放行（已知风险）</td></tr>
+      <tr><td><b>LLM</b></td><td>熔断+重试；已生成部分落库后返回 error 事件</td></tr>
+      <tr><td><b>MinerU 解析</b></td><td>文档标记 failed，保留旧版本可检索</td></tr>
+      <tr><td><b>空结果缓存</b></td><td>仅正常空结果短缓存 30s，异常抖动不缓存</td></tr>
+    </table>
+  </div>
+
+  <div class="region">
+    <h2><span class="tag">参数</span>关键参数速查（.env）</h2>
+    <div class="desc">常用调节旋钮与默认值</div>
+    <table>
+      <tr><th>参数</th><th>含义 / 默认</th></tr>
+      <tr><td><b>PARENT_CHUNK_SIZE</b></td><td>父块 800–1200 字 / 子块 300–500 字</td></tr>
+      <tr><td><b>DOC_DEDUP_SIMILARITY</b></td><td>文档判重阈值 0.90</td></tr>
+      <tr><td><b>RETRIEVAL_K / CANDIDATE_K</b></td><td>最终返回 / 召回候选数量</td></tr>
+      <tr><td><b>BM25_MODE</b></td><td>off / fallback / fuse + RRF 权重</td></tr>
+      <tr><td><b>RERANK_SCORE_THRESHOLD</b></td><td>精排过滤阈值 + 失败模式 drop/vector</td></tr>
+      <tr><td><b>ANSWER / RETRIEVAL_CACHE_TTL</b></td><td>两级缓存 TTL；降级结果短 TTL</td></tr>
+      <tr><td><b>MAX_CONTEXT / HISTORY_CHARS</b></td><td>提示词资料与历史的字符预算</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="footer">AskToFit 售前智能导购 · RAG 系统流程（详细版） · 依据源码实际实现整理（app/services/*.py） · 打印为 PDF：浏览器 Ctrl+P</div>
+
+</body>
+</html>
