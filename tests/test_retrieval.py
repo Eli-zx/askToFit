@@ -1,5 +1,7 @@
 """多知识库检索编排测试。"""
 
+import asyncio
+
 import pytest
 
 from app.models.chunk import Chunk
@@ -7,6 +9,7 @@ from app.models.document import Document
 from app.models.knowledge_base import KnowledgeBase
 from app.models.parent_chunk import ParentChunk
 from app.services import retrieval as retrieval_module
+from app.services.cache import bump_kb_version
 from app.services.retrieval import RetrievalService, dedupe_hits, enrich_hits
 from config import Config
 
@@ -42,7 +45,7 @@ class FakeReranker:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def rerank(self, query, hits, top_k):
+    async def rerank(self, query, hits, top_k, priority="normal"):
         self.calls.append({"query": query, "hits": hits, "top_k": top_k})
         reranked = []
         for index, hit in enumerate(hits[:top_k]):
@@ -472,7 +475,7 @@ async def test_degraded_results_use_short_ttl(monkeypatch) -> None:
         captured["ttl"] = ttl
 
     class DegradedReranker(FakeReranker):
-        async def rerank(self, query, hits, top_k):
+        async def rerank(self, query, hits, top_k, priority="normal"):
             return [{**hit, "rerank_failed": True} for hit in hits[:top_k]]
 
     monkeypatch.setattr(retrieval_module, "set_json", fake_set_json)
@@ -504,6 +507,63 @@ async def test_empty_results_cache_for_short_ttl(monkeypatch) -> None:
 
     await RetrievalService().retrieve("冷门", {"hybrid": [1]})
     assert captured["ttl"] == 30
+
+
+async def test_kb_version_change_invalidates_cached_retrieval(
+    monkeypatch, fake_redis
+) -> None:
+    monkeypatch.setattr(Config, "cache_enabled", True)
+    embeds = {"count": 0}
+
+    async def fake_embed_query(text, redis=None):
+        embeds["count"] += 1
+        return [0.1], {}
+
+    monkeypatch.setattr(retrieval_module.embedding_service, "embed_query", fake_embed_query)
+    monkeypatch.setattr(
+        retrieval_module, "vector_store", FakeVectorStore({1: [_hit("A", 0.9)]})
+    )
+    monkeypatch.setattr(retrieval_module, "reranker_service", FakeReranker())
+
+    service = RetrievalService()
+    first = await service.retrieve("包邮", {"hybrid": [1]}, redis=fake_redis)
+    second = await service.retrieve("包邮", {"hybrid": [1]}, redis=fake_redis)
+    assert first == second
+    assert embeds["count"] == 1
+
+    await bump_kb_version(fake_redis, 1)
+    third = await service.retrieve("包邮", {"hybrid": [1]}, redis=fake_redis)
+
+    assert third == first
+    assert embeds["count"] == 2
+
+
+async def test_concurrent_misses_are_coalesced(monkeypatch, fake_redis) -> None:
+    monkeypatch.setattr(Config, "cache_enabled", True)
+    monkeypatch.setattr(Config, "retrieval_singleflight", True)
+    calls = {"count": 0}
+
+    async def slow_embed_query(text, redis=None):
+        calls["count"] += 1
+        await asyncio.sleep(0.05)
+        return [0.1], {}
+
+    monkeypatch.setattr(
+        retrieval_module.embedding_service, "embed_query", slow_embed_query
+    )
+    monkeypatch.setattr(
+        retrieval_module, "vector_store", FakeVectorStore({1: [_hit("A", 0.9)]})
+    )
+    monkeypatch.setattr(retrieval_module, "reranker_service", FakeReranker())
+
+    service = RetrievalService()
+    results = await asyncio.gather(
+        service.retrieve("包邮", {"hybrid": [1]}, redis=fake_redis),
+        service.retrieve("包邮", {"hybrid": [1]}, redis=fake_redis),
+    )
+
+    assert results[0] == results[1]
+    assert calls["count"] == 1
 
 
 async def test_exception_results_are_not_cached(monkeypatch) -> None:

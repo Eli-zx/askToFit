@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ from app.services.dedup import (
 )
 from app.services.embedding import embedding_service
 from app.services.mineru_parser import parse_with_mineru
+from app.services.outbox import enqueue_outbox, process_entry_in_session
 from app.services.parsers import (
     DocumentParseError,
     ParsedDocument,
@@ -40,7 +41,6 @@ from app.services.parsers import (
 from app.services.search_index import invalidate_search_caches
 from app.services.storage import delete_stored_file
 from app.services.text_splitter import ParentChunkData, TextChunk, TextSplitter
-from app.services.vector_store import vector_store
 from config import Config
 
 logger = get_logger(__name__)
@@ -122,14 +122,6 @@ async def _refresh_kb_count(db, kb_id: int) -> None:
 async def _delete_rows(db, doc_id: int) -> None:
     await db.execute(delete(Chunk).where(Chunk.doc_id == doc_id))
     await db.execute(delete(ParentChunk).where(ParentChunk.doc_id == doc_id))
-
-
-async def _delete_vectors_by_uids(uids: list[str]) -> None:
-    for uid in uids:
-        try:
-            await vector_store.delete_by_uid(uid)
-        except Exception:
-            logger.exception("清理分块向量失败 uid=%s", uid)
 
 
 async def _parse_stored_document(document: Document) -> ParsedDocument:
@@ -291,12 +283,21 @@ async def _mark_failed(
             if document.replaces_doc_id:
                 document.is_current = False
         await _refresh_kb_count(db, document.kb_id)
+        if not preserve_current:
+            # 向量清理同样走 outbox，Milvus 暂时不可用也能最终删除
+            await enqueue_outbox(db, "delete_doc", {"doc_id": document_id})
         await db.commit()
-    if not preserve_current:
-        try:
-            await vector_store.delete_by_doc(document_id)
-        except Exception:
-            logger.exception("清理失败文档的向量数据时出错 doc_id=%s", document_id)
+
+
+def _stable_uid(
+    document: Document, kind: str, index: int, content_fingerprint: str | None
+) -> str:
+    """确定性分块 UID：同一文档版本重试写入时幂等覆盖，不会产生重复向量。"""
+    seed = (
+        f"{document.id}:{int(document.version or 1)}:{kind}:{index}:"
+        f"{content_fingerprint or ''}"
+    )
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
 def _build_parent_records(
@@ -305,7 +306,8 @@ def _build_parent_records(
     records: list[ParentChunk] = []
     uid_by_index: dict[int, str] = {}
     for parent in parents:
-        uid = uuid.uuid4().hex
+        fingerprint = parent.content_hash or content_hash(parent.content)
+        uid = _stable_uid(document, "p", parent.index, fingerprint)
         uid_by_index[parent.index] = uid
         records.append(
             ParentChunk(
@@ -314,7 +316,7 @@ def _build_parent_records(
                 kb_id=document.kb_id,
                 parent_index=parent.index,
                 content=parent.content,
-                content_hash=parent.content_hash or content_hash(parent.content),
+                content_hash=fingerprint,
                 title=_truncate(parent.title or document.original_name, 250),
                 section=_truncate(parent.section, 250),
                 page=parent.page,
@@ -331,15 +333,16 @@ def _build_child_records(
 ) -> list[Chunk]:
     records: list[Chunk] = []
     for index, chunk in enumerate(chunks):
+        fingerprint = chunk.content_hash or content_hash(chunk.content)
         records.append(
             Chunk(
-                uid=uuid.uuid4().hex,
+                uid=_stable_uid(document, "c", index, fingerprint),
                 doc_id=document.id,
                 kb_id=document.kb_id,
                 chunk_index=index,
                 parent_uid=parent_uid_by_index.get(chunk.parent_index),
                 content=chunk.content,
-                content_hash=chunk.content_hash or content_hash(chunk.content),
+                content_hash=fingerprint,
                 title=_truncate(chunk.title or document.original_name, 250),
                 section=_truncate(chunk.section, 250),
                 page=chunk.page,
@@ -357,12 +360,15 @@ async def ingest_document(document_id: int) -> None:
         async with maker() as db:
             document = await db.get(Document, document_id)
             if document is None:
-                logger.warning("待入库文档不存在 doc_id=%s", document_id)
+                logger.warning(
+                    "待入库文档不存在 doc_id=%s"
+                    "（app/services/ingestion.py:ingest_document）",
+                    document_id,
+                )
                 return
 
             previous_current = bool(document.is_current)
             previous_chunk_count = int(document.chunk_count or 0)
-            previous_action = document.update_action
             old_chunk_uids = list(
                 await db.scalars(select(Chunk.uid).where(Chunk.doc_id == document.id))
             )
@@ -380,7 +386,6 @@ async def ingest_document(document_id: int) -> None:
                 reindexing,
             )
 
-            inserted_vector_uids: list[str] = []
             try:
                 parsed = await _parse_stored_document(document)
                 text = document_text(parsed)
@@ -431,9 +436,7 @@ async def ingest_document(document_id: int) -> None:
                     )
                 else:
                     document.is_current = True
-                    document.update_action = (
-                        previous_action if reindexing else "pending"
-                    )
+                    document.update_action = "pending"
                 await db.commit()
 
                 splitter = TextSplitter(
@@ -474,67 +477,93 @@ async def ingest_document(document_id: int) -> None:
                     for index, record in enumerate(records)
                 ]
 
-                # 先写入新向量；DB 事务成功后才切换 current 并删除旧版本数据
-                inserted_vector_uids = [record.uid for record in records]
-                await vector_store.insert_chunks(vector_rows)
+                # 先提交 MySQL（分块 + outbox），Milvus 由 outbox 幂等同步。
+                # 更新版本在向量就绪前保持旧版本 current，检索不中断。
+                new_uids = {record.uid for record in records}
+                stale_uids = (
+                    sorted(set(old_chunk_uids) - new_uids) if reindexing else []
+                )
+                final_action = (
+                    "updated"
+                    if replacing is not None
+                    else "reindexed"
+                    if reindexing
+                    else "created"
+                )
 
-                # 同一文档重建索引：旧分块在事务内整体替换
+                # 与删除路径串行化：若文档在解析期间已被删除，直接放弃写入，
+                # 避免并发删除后重新插入孤儿分块。
+                locked = await db.scalar(
+                    select(Document)
+                    .where(Document.id == document.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if locked is None:
+                    logger.warning(
+                        "文档在入库过程中已被删除，放弃写入 doc_id=%s"
+                        "（app/services/ingestion.py:ingest_document）",
+                        document_id,
+                    )
+                    await db.rollback()
+                    return
+                document = locked
+
                 await _delete_rows(db, document.id)
                 db.add_all(parent_records)
                 db.add_all(records)
                 document.chunk_count = len(records)
-                document.status = "completed"
+                document.status = "processing"
                 document.error_message = None
-                document.is_current = True
-                if replacing is not None:
-                    document.update_action = "updated"
-                    replacing.is_current = False
-                    replacing.update_action = "superseded"
-                    await _delete_rows(db, replacing.id)
-                elif reindexing:
-                    document.update_action = "reindexed"
-                else:
-                    document.update_action = "created"
-
+                document.update_action = (
+                    "updating" if replacing is not None else final_action
+                )
                 await _refresh_kb_count(db, document.kb_id)
+                entry = await enqueue_outbox(
+                    db,
+                    "replace_doc",
+                    {
+                        "doc_id": document.id,
+                        "kb_id": document.kb_id,
+                        "action": final_action,
+                        "replaces_doc_id": replacing.id if replacing else None,
+                        "stale_uids": stale_uids,
+                    },
+                )
                 await db.commit()
                 # 知识内容变化后旧检索/回答缓存必须失效
                 await invalidate_search_caches(document.kb_id)
 
-                if replacing is not None:
-                    try:
-                        await vector_store.delete_by_doc(replacing.id)
-                    except Exception:
-                        logger.exception(
-                            "删除旧版本文档向量失败 doc_id=%s", replacing.id
-                        )
-                    delete_stored_file(replacing.file_path)
-                if reindexing and old_chunk_uids:
-                    await _delete_vectors_by_uids(old_chunk_uids)
-
-                elapsed = time.perf_counter() - started
-                logger.info(
-                    "文档入库完成 doc_id=%s action=%s chunks=%d parents=%d elapsed=%.2fs",
-                    document.id,
-                    document.update_action,
-                    len(records),
-                    len(parents),
-                    elapsed,
+                # 立即尝试同步；失败则保留 pending 条目，由后台 worker 重试
+                synced = await process_entry_in_session(
+                    db, entry, vector_rows=vector_rows
                 )
+                elapsed = time.perf_counter() - started
+                if synced:
+                    if replacing is not None:
+                        delete_stored_file(replacing.file_path)
+                    logger.info(
+                        "文档入库完成 doc_id=%s action=%s chunks=%d parents=%d elapsed=%.2fs",
+                        document.id,
+                        final_action,
+                        len(records),
+                        len(parents),
+                        elapsed,
+                    )
+                else:
+                    logger.warning(
+                        "向量同步未完成，已交由 outbox 重试 doc_id=%s outbox_id=%s"
+                        "（app/services/ingestion.py:ingest_document）",
+                        document.id,
+                        entry.id,
+                    )
             except Exception as exc:  # noqa: BLE001
-                logger.exception("文档入库失败 doc_id=%s", document_id)
+                logger.exception(
+                    "文档入库失败 doc_id=%s"
+                    "（app/services/ingestion.py:ingest_document）",
+                    document_id,
+                )
                 await db.rollback()
-                if inserted_vector_uids:
-                    await _delete_vectors_by_uids(inserted_vector_uids)
                 await _mark_failed(
                     document_id, exc, preserve_current=reindexing
                 )
-
-
-async def refresh_chunk_vector(chunk: Chunk) -> None:
-    """分块内容编辑后重新编码并写入 Milvus。"""
-    text = build_embedding_text(chunk.title, chunk.section, chunk.content)
-    dense, sparse = await embedding_service.embed_documents([text])
-    row = build_vector_row(chunk.uid, chunk, dense[0], sparse[0])
-    await vector_store.upsert_chunk(row)
-    logger.info("分块向量已更新 chunk_uid=%s", chunk.uid)

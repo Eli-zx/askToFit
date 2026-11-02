@@ -12,7 +12,11 @@ from app.api.deps import get_current_user
 from app.core.logger import get_logger
 from app.core.rate_limit import enforce_rate_limit
 from app.core.redis_client import get_redis
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    hash_password_async,
+    verify_password_or_dummy,
+)
 from config import Config
 from app.db.session import get_db
 from app.models.user import User
@@ -51,7 +55,7 @@ async def register(
         redis,
         scope="register",
         identity=request.client.host if request.client else "unknown",
-        limit=Config.rate_limit_login_requests,
+        limit=Config.rate_limit_register_requests,
     )
     if not await verify_captcha(redis, payload.captcha_id, payload.captcha_code):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "验证码错误或已过期")
@@ -63,7 +67,7 @@ async def register(
     user = User(
         username=payload.username,
         nickname=payload.username,
-        password_hash=hash_password(payload.password),
+        password_hash=await hash_password_async(payload.password),
     )
     db.add(user)
     try:
@@ -95,7 +99,10 @@ async def login(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "验证码错误或已过期")
 
     user = await db.scalar(select(User).where(User.username == payload.username))
-    if user is None or not verify_password(payload.password, user.password_hash):
+    password_ok = await verify_password_or_dummy(
+        payload.password, user.password_hash if user is not None else None
+    )
+    if user is None or not password_ok:
         logger.warning("登录失败 username=%s", payload.username)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号或密码错误")
 

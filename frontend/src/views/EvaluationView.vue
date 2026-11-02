@@ -5,7 +5,6 @@ import {
   Delete,
   Document,
   Refresh,
-  TrendCharts,
   View,
 } from '@element-plus/icons-vue'
 
@@ -26,6 +25,7 @@ import {
   formatDuration,
   formatMetric,
   formatPercent,
+  isMeaningfulRun,
   metricLabel,
   strategyLabel,
 } from '@/utils/evaluation'
@@ -87,6 +87,13 @@ function latestGenerationName(run) {
   return preferred.find((name) => metrics[name] !== undefined && metrics[name] !== null)
 }
 
+const minSamples = computed(() => overview.value?.min_samples ?? 10)
+
+const excludedRuns = computed(() => {
+  if (!overview.value) return 0
+  return Math.max(0, (overview.value.total_runs || 0) - (overview.value.meaningful_runs || 0))
+})
+
 const statsCards = computed(() => {
   const run = overview.value?.latest
   const delta = overview.value?.delta
@@ -95,7 +102,11 @@ const statsCards = computed(() => {
     {
       label: '最近运行',
       value: run ? RUN_STATUS_META[run.status]?.label || run.status : '暂无',
-      hint: run ? formatDateTime(run.finished_at || run.created_at) : '尚未写入评估记录',
+      hint: run
+        ? formatDateTime(run.finished_at || run.created_at)
+        : excludedRuns.value
+          ? `${excludedRuns.value} 次运行样本不足 ${minSamples.value} 条，未计入概览`
+          : '尚未写入评估记录',
       tone: 'violet',
       delta: null,
     },
@@ -109,7 +120,7 @@ const statsCards = computed(() => {
     {
       label: 'Section Recall@K',
       value: formatPercent(metricValue(run, 'section', 'recall_at_k')),
-      hint: run ? `${run.sample_count} 条样本` : '暂无样本',
+      hint: run ? `${run.sample_count} 条样本` : `需 ≥ ${minSamples.value} 条样本`,
       tone: 'blue',
       delta: delta?.retrieval?.section?.recall_at_k ?? null,
     },
@@ -124,16 +135,6 @@ const statsCards = computed(() => {
 })
 
 const trendPoints = computed(() => trends.value.slice(-TREND_LIMIT))
-
-const trendMax = computed(() =>
-  Math.max(
-    0.0001,
-    ...trendPoints.value.flatMap((item) => [
-      Number(item.doc_hit_at_k) || 0,
-      Number(item.section_recall_at_k) || 0,
-    ]),
-  ),
-)
 
 const pageCount = computed(() => Math.max(1, Math.ceil(runTotal.value / PAGE_SIZE)))
 const casePageCount = computed(() => Math.max(1, Math.ceil(caseTotal.value / CASE_SIZE)))
@@ -156,7 +157,8 @@ function trendLabel(item) {
 function barHeight(value) {
   const number = Number(value)
   if (!Number.isFinite(number) || number <= 0) return '0%'
-  return `${Math.max(3, (number / trendMax.value) * 100)}%`
+  // 指标本身是 0–1 的比例，按 100% 固定刻度绘制，柱高才可跨图比较
+  return `${Math.max(3, Math.min(1, number) * 100)}%`
 }
 
 function runTone(status) {
@@ -359,7 +361,7 @@ onMounted(refresh)
             评估<span class="atf-gradient-text">看板</span>
           </h1>
           <p class="atf-subtitle">
-            检索指标由本地口径计算，生成指标来自官方 RAGAS。评估仍由 CLI 运行，看板只读展示结果。
+            检索命中与回答忠实度按统一口径计算，每次运行都会沉淀，便于对比迭代效果。
           </p>
         </div>
         <div class="eval-head__actions">
@@ -392,24 +394,32 @@ onMounted(refresh)
 
       <section class="eval-trend">
         <div class="eval-trend__head">
-          <strong>最近 {{ trendPoints.length || TREND_LIMIT }} 次运行</strong>
+          <strong>最近 {{ trendPoints.length || TREND_LIMIT }} 次有效运行</strong>
           <span class="eval-trend__legend">
             <i class="dot-doc" /> Doc Hit@K
             <i class="dot-section" /> Section Recall@K
+            <span class="eval-trend__threshold">样本 ≥ {{ minSamples }} 条</span>
           </span>
         </div>
-        <div v-if="trendPoints.length" class="eval-trend__bars">
-          <div
-            v-for="point in trendPoints"
-            :key="point.id"
-            class="eval-trend__group"
-            :title="`#${point.id} ${formatDateTime(point.created_at)} · Doc Hit ${formatPercent(point.doc_hit_at_k)} · Section Recall ${formatPercent(point.section_recall_at_k)}`"
-          >
-            <div class="eval-trend__bars-inner">
-              <i class="bar-doc" :style="{ height: barHeight(point.doc_hit_at_k) }" />
-              <i class="bar-section" :style="{ height: barHeight(point.section_recall_at_k) }" />
+        <div v-if="trendPoints.length" class="eval-trend__plot">
+          <div class="eval-trend__axis" aria-hidden="true">
+            <span>100%</span>
+            <span>50%</span>
+            <span>0</span>
+          </div>
+          <div class="eval-trend__bars">
+            <div
+              v-for="point in trendPoints"
+              :key="point.id"
+              class="eval-trend__group"
+              :title="`#${point.id} ${formatDateTime(point.created_at)} · Doc Hit ${formatPercent(point.doc_hit_at_k)} · Section Recall ${formatPercent(point.section_recall_at_k)}`"
+            >
+              <div class="eval-trend__bars-inner">
+                <i class="bar-doc" :style="{ height: barHeight(point.doc_hit_at_k) }" />
+                <i class="bar-section" :style="{ height: barHeight(point.section_recall_at_k) }" />
+              </div>
+              <small>{{ trendLabel(point) }}</small>
             </div>
-            <small>{{ trendLabel(point) }}</small>
           </div>
         </div>
         <div v-else class="eval-trend__empty">
@@ -446,7 +456,7 @@ onMounted(refresh)
             :value="option.value"
           />
         </el-select>
-        <el-button type="primary" @click="applyFilters">筛选</el-button>
+        <el-button class="eval-filters__submit" @click="applyFilters">筛选</el-button>
         <el-button text @click="resetFilters">重置</el-button>
         <span class="eval-filters__total">共 {{ runTotal }} 次运行</span>
       </section>
@@ -461,6 +471,22 @@ onMounted(refresh)
             <template #default="{ row }">{{ strategyLabel(row.strategy) }}</template>
           </el-table-column>
           <el-table-column prop="top_k" label="TopK" width="70" align="center" />
+          <el-table-column label="样本" width="96" align="center">
+            <template #default="{ row }">
+              <div class="eval-samples">
+                <span>{{ row.sample_count }}</span>
+                <el-tag
+                  v-if="!isMeaningfulRun(row)"
+                  type="info"
+                  size="small"
+                  effect="plain"
+                  class="eval-sample-tag"
+                >
+                  样本不足
+                </el-tag>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="Doc Hit@K" width="100" align="right">
             <template #default="{ row }">
               {{ formatPercent(metricValue(row, 'doc', 'hit_at_k')) }}
@@ -497,9 +523,6 @@ onMounted(refresh)
           </el-table-column>
           <template #empty>
             <div class="eval-empty">
-              <div class="eval-empty__icon">
-                <el-icon><TrendCharts /></el-icon>
-              </div>
               <strong>还没有评估运行</strong>
               <span>按下方命令执行一次评估，结果会写入这里</span>
               <el-button size="small" type="primary" plain @click="commandDialog = true">
@@ -541,7 +564,18 @@ onMounted(refresh)
             </div>
             <div>
               <span>样本</span>
-              <strong>{{ activeRun.answerable_count }} / {{ activeRun.sample_count }} 可回答</strong>
+              <strong>
+                {{ activeRun.answerable_count }} / {{ activeRun.sample_count }} 可回答
+                <el-tag
+                  v-if="!isMeaningfulRun(activeRun)"
+                  type="info"
+                  size="small"
+                  effect="plain"
+                  class="eval-sample-tag"
+                >
+                  样本不足，不计入概览
+                </el-tag>
+              </strong>
             </div>
             <div>
               <span>judge 模型</span>
@@ -734,6 +768,10 @@ onMounted(refresh)
           评估结果默认写入 eval_runs / eval_cases；命令不会输出任何 API Key。
           运行前请确认 MySQL、Milvus 与本地 BGE 模型可用。
         </p>
+        <p class="eval-muted">
+          概览与趋势只统计样本数 ≥ EVAL_MIN_MEANINGFUL_SAMPLES（默认 10）的运行；
+          低于阈值的运行仍保留在列表中，并标注“样本不足”。
+        </p>
       </div>
       <template #footer>
         <el-button type="primary" @click="commandDialog = false">知道了</el-button>
@@ -757,33 +795,48 @@ onMounted(refresh)
   gap: 8px;
 }
 
+/* 与知识库页一致：通栏指标带，而不是四张卡片 */
 .eval-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  border-top: 1px solid var(--atf-line-strong);
+  border-bottom: 1px solid var(--atf-line-strong);
 }
 
 .eval-stat {
   display: flex;
   flex-direction: column;
-  padding: 16px 18px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  border-radius: 15px;
-  box-shadow: var(--atf-shadow-sm);
+  padding: 18px 26px 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   gap: 8px;
+}
+
+.eval-stat + .eval-stat {
+  border-left: 1px solid var(--atf-line);
+}
+
+.eval-stat:first-child {
+  padding-left: 0;
 }
 
 .eval-stat__label {
   color: var(--atf-muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .eval-stat__value {
   color: var(--atf-ink);
-  font-size: 26px;
-  font-weight: 760;
+  font-family: var(--atf-font-display);
+  font-size: clamp(32px, 3.2vw, 44px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
   font-variant-numeric: tabular-nums;
 }
 
@@ -791,26 +844,29 @@ onMounted(refresh)
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  color: #9a9db2;
+  color: var(--atf-muted);
   font-size: 10px;
   gap: 6px;
 }
 
-.eval-stat--violet strong { color: var(--atf-brand-deep); }
-.eval-stat--mint strong { color: #1d8a70; }
-.eval-stat--blue strong { color: #2563a8; }
-.eval-stat--orange strong { color: #b06a1c; }
+/* 指标数值统一用墨色，状态色只留给真正需要警示的地方 */
+.eval-stat--violet strong,
+.eval-stat--mint strong,
+.eval-stat--blue strong,
+.eval-stat--orange strong {
+  color: var(--atf-ink);
+}
 
-.delta-up { color: #1d8a70; font-style: normal; font-weight: 700; }
-.delta-down { color: #b03a47; font-style: normal; font-weight: 700; }
-.delta-flat { color: #9a9db2; font-style: normal; }
+.delta-up { color: var(--atf-mint); font-style: normal; font-weight: 700; }
+.delta-down { color: var(--atf-brand-deep); font-style: normal; font-weight: 700; }
+.delta-flat { color: var(--atf-muted); font-style: normal; }
 
 .eval-trend {
   padding: 16px 18px;
   margin-top: 14px;
-  background: #fff;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 15px;
+  border-radius: var(--atf-radius-md);
 }
 
 .eval-trend__head {
@@ -831,29 +887,76 @@ onMounted(refresh)
 
 .eval-trend__legend i {
   display: inline-block;
-  width: 7px;
-  height: 7px;
+  width: 11px;
+  height: 1px;
   margin-left: 7px;
-  border-radius: 2px;
+  border-radius: 0;
 }
 
-.dot-doc { background: #5b5bd6; }
-.dot-section { background: #35b795; }
+.eval-trend__threshold {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--atf-line);
+}
+
+.eval-samples {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.eval-sample-tag {
+  margin-left: 4px;
+}
+
+.dot-doc { background: var(--atf-brand); }
+.dot-section { background: var(--atf-bronze); }
+
+.eval-trend__plot {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 14px;
+  gap: 10px;
+}
+
+.eval-trend__axis {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 30px;
+  height: 110px;
+  margin-bottom: 18px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 
 .eval-trend__bars {
   display: flex;
+  flex: 1;
   align-items: flex-end;
+  justify-content: center;
   height: 110px;
-  margin-top: 14px;
+  border-bottom: 1px solid var(--atf-line-strong);
+  background-image: repeating-linear-gradient(
+    to top,
+    var(--atf-line) 0 1px,
+    transparent 1px 25%
+  );
   gap: 8px;
 }
 
 .eval-trend__group {
   display: flex;
-  flex: 1;
+  flex: 1 1 54px;
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
+  max-width: 88px;
   height: 100%;
   gap: 6px;
 }
@@ -870,17 +973,18 @@ onMounted(refresh)
 .eval-trend__bars-inner i {
   width: 42%;
   max-width: 14px;
-  border-radius: 4px 4px 2px 2px;
-  opacity: 0.86;
+  border-radius: 1px 1px 0 0;
+  opacity: 0.88;
   transition: height 0.3s ease;
 }
 
-.bar-doc { background: linear-gradient(180deg, #8b7cf6, #5b5bd6); }
-.bar-section { background: linear-gradient(180deg, #6fe0c4, #2f9e80); }
+.bar-doc { background: var(--atf-brand); }
+.bar-section { background: var(--atf-bronze); }
 
 .eval-trend__group small {
-  color: #aeb1c5;
-  font-size: 8.5px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
   white-space: nowrap;
 }
 
@@ -894,16 +998,35 @@ onMounted(refresh)
 .eval-filters {
   display: flex;
   align-items: center;
-  padding: 12px;
-  margin: 16px 0;
-  background: #fbfaff;
-  border: 1px solid var(--atf-line);
-  border-radius: 13px;
+  padding: 12px 0;
+  margin: 18px 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--atf-line-strong);
+  border-bottom: 1px solid var(--atf-line);
+  border-radius: 0;
   gap: 10px;
 }
 
 .eval-filters :deep(.el-select) {
   width: 150px;
+}
+
+.eval-filters__submit {
+  height: 32px;
+  padding: 0 16px;
+  color: var(--atf-brand-deep);
+  font-size: 11.5px;
+  background: transparent;
+  border: 1px solid var(--atf-line-strong);
+  border-radius: 0;
+}
+
+.eval-filters__submit:hover,
+.eval-filters__submit:focus {
+  color: var(--atf-brand);
+  background: var(--atf-wash);
+  border-color: var(--atf-brand);
 }
 
 .eval-filters__total {
@@ -941,18 +1064,6 @@ onMounted(refresh)
   font-size: 11px;
 }
 
-.eval-empty__icon {
-  display: grid;
-  width: 44px;
-  height: 44px;
-  margin-bottom: 4px;
-  color: var(--atf-brand);
-  font-size: 20px;
-  background: var(--atf-brand-soft);
-  border-radius: 50%;
-  place-items: center;
-}
-
 .eval-empty strong {
   color: var(--atf-ink-soft);
   font-size: 13px;
@@ -963,7 +1074,7 @@ onMounted(refresh)
 }
 
 .eval-muted {
-  color: #9a9db2;
+  color: var(--atf-muted);
   font-size: 11px;
 }
 
@@ -977,9 +1088,9 @@ onMounted(refresh)
   display: flex;
   flex-direction: column;
   padding: 10px 12px;
-  background: #fbfaff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 11px;
+  border-radius: var(--atf-radius-sm);
   gap: 4px;
 }
 
@@ -1018,9 +1129,9 @@ onMounted(refresh)
   display: flex;
   flex-direction: column;
   padding: 10px 12px;
-  background: #fff;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 11px;
+  border-radius: var(--atf-radius-sm);
   gap: 4px;
 }
 
@@ -1101,19 +1212,21 @@ onMounted(refresh)
 
 .eval-chip {
   padding: 2px 8px;
-  color: #5b4bc4;
-  font-size: 9.5px;
-  background: #eeebff;
-  border-radius: 999px;
+  color: var(--atf-brand-deep);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  background: var(--atf-brand-soft);
+  border-radius: 1px;
 }
 
 .eval-case-expand__error {
   padding: 7px 10px;
   margin-top: 8px;
-  color: #b03a47;
+  color: var(--atf-brand-deep);
   line-height: 1.6;
-  background: #fff1f2;
-  border-radius: 8px;
+  background: var(--atf-tone-pink-bg);
+  border-left: 2px solid var(--atf-brand);
+  border-radius: 0;
 }
 
 .eval-command p {
@@ -1133,19 +1246,32 @@ onMounted(refresh)
   flex: 1;
   padding: 10px 12px;
   overflow-x: auto;
-  color: #4f5180;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--atf-ink-soft);
+  font-family: var(--atf-font-mono);
   font-size: 11px;
   line-height: 1.6;
   white-space: pre-wrap;
-  background: #f6f5ff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 10px;
+  border-radius: var(--atf-radius-sm);
 }
 
 @media (max-width: 900px) {
   .eval-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .eval-stat {
+    padding: 16px 16px 14px;
+  }
+
+  .eval-stat:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .eval-stat:nth-child(n + 3) {
+    border-top: 1px solid var(--atf-line);
   }
 
   .eval-detail__meta,

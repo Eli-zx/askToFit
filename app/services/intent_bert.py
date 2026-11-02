@@ -102,6 +102,10 @@ class BertIntentClassifier:
             scores=scores,
         )
 
+    async def warmup(self) -> None:
+        """加载模型并执行一次短推理，避免首个请求承担加载与冷启动耗时。"""
+        await asyncio.to_thread(self._predict_sync, "你好")
+
     async def predict(self, text: str) -> IntentResult:
         normalized = normalize_question(text)
         if not normalized:

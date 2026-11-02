@@ -14,6 +14,7 @@ export const METRIC_LABELS = {
   context_precision: 'Context Precision',
   context_recall: 'Context Recall',
   llm_context_precision_with_reference: 'Context Precision',
+  refusal_accuracy: '正确拒答率',
 }
 
 export const STRATEGY_LABELS = {
@@ -69,4 +70,8 @@ export function metricLabel(name) {
 
 export function strategyLabel(strategy) {
   return STRATEGY_LABELS[strategy] || strategy || '—'
+}
+
+export function isMeaningfulRun(run) {
+  return Boolean(run) && run.is_meaningful !== false
 }

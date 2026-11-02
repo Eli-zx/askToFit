@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.eval_run import EvalCase, EvalRun
+from config import Config
 
 _RUN_FIELDS = {
     "dataset_name",
@@ -149,11 +150,25 @@ async def delete_eval_run(db: AsyncSession, run_id: int) -> bool:
     return True
 
 
-async def get_overview(db: AsyncSession) -> dict[str, Any]:
-    """最近一次成功运行、上一次成功运行与总运行数。"""
+def meaningful_sample_threshold(min_samples: int | None = None) -> int:
+    """低于该样本数的运行不计入概览与趋势，避免小样本把指标抬成 1.0。"""
+    if min_samples is None:
+        return max(1, int(Config.eval_min_meaningful_samples))
+    return max(0, int(min_samples))
+
+
+async def get_overview(
+    db: AsyncSession, *, min_samples: int | None = None
+) -> dict[str, Any]:
+    """最近一次有统计意义的成功运行、上一次同类运行与运行总数。"""
+    threshold = meaningful_sample_threshold(min_samples)
+    meaningful = (
+        EvalRun.status == "success",
+        EvalRun.sample_count >= threshold,
+    )
     latest = await db.scalar(
         select(EvalRun)
-        .where(EvalRun.status == "success")
+        .where(*meaningful)
         .order_by(EvalRun.id.desc())
         .limit(1)
     )
@@ -161,19 +176,37 @@ async def get_overview(db: AsyncSession) -> dict[str, Any]:
     if latest is not None:
         previous = await db.scalar(
             select(EvalRun)
-            .where(EvalRun.status == "success", EvalRun.id < latest.id)
+            .where(*meaningful, EvalRun.id < latest.id)
             .order_by(EvalRun.id.desc())
             .limit(1)
         )
     total = int(await db.scalar(select(func.count()).select_from(EvalRun)) or 0)
-    return {"latest": latest, "previous": previous, "total_runs": total}
+    meaningful_total = int(
+        await db.scalar(
+            select(func.count()).select_from(EvalRun).where(*meaningful)
+        )
+        or 0
+    )
+    return {
+        "latest": latest,
+        "previous": previous,
+        "total_runs": total,
+        "meaningful_runs": meaningful_total,
+        "min_samples": threshold,
+    }
 
 
-async def list_eval_trends(db: AsyncSession, limit: int = 30) -> list[EvalRun]:
+async def list_eval_trends(
+    db: AsyncSession, limit: int = 30, *, min_samples: int | None = None
+) -> list[EvalRun]:
+    threshold = meaningful_sample_threshold(min_samples)
     rows = list(
         await db.scalars(
             select(EvalRun)
-            .where(EvalRun.status == "success")
+            .where(
+                EvalRun.status == "success",
+                EvalRun.sample_count >= threshold,
+            )
             .order_by(EvalRun.id.desc())
             .limit(max(1, limit))
         )

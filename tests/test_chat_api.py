@@ -3,7 +3,11 @@
 import json
 
 import pytest
+from sqlalchemy import select, update
 
+from app.main import app as fastapi_app
+from app.models.knowledge_gap import KnowledgeGap
+from app.models.user import User
 from app.services import chat as chat_module
 from app.services import retrieval as retrieval_module
 from app.services.captcha import CAPTCHA_KEY_PREFIX
@@ -11,7 +15,17 @@ from app.services.intent import classify_intent_keyword
 from app.services.llm import LLMError
 
 
-async def auth_headers(client, redis, username: str = "alice") -> dict:
+async def set_admin(db_maker, username: str, *, is_admin: bool = True) -> None:
+    async with db_maker() as session:
+        await session.execute(
+            update(User).where(User.username == username).values(is_admin=is_admin)
+        )
+        await session.commit()
+
+
+async def auth_headers(
+    client, redis, username: str = "alice", *, admin: bool = True
+) -> dict:
     captcha = await client.get("/api/auth/captcha")
     captcha_id = captcha.json()["captcha_id"]
     code = await redis.get(CAPTCHA_KEY_PREFIX + captcha_id)
@@ -40,7 +54,35 @@ async def auth_headers(client, redis, username: str = "alice") -> dict:
         },
     )
     assert login.status_code == 200
+    if admin:
+        await set_admin(fastapi_app.state.test_db_maker, username)
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+async def promote_admin(db_maker, username: str) -> None:
+    await set_admin(db_maker, username)
+
+
+async def user_id_by_name(db_maker, username: str) -> int:
+    async with db_maker() as session:
+        user_id = await session.scalar(
+            select(User.id).where(User.username == username)
+        )
+    assert user_id is not None
+    return int(user_id)
+
+
+async def insert_gap(db_maker, user_id: int, question: str) -> None:
+    async with db_maker() as session:
+        session.add(
+            KnowledgeGap(
+                user_id=user_id,
+                question=question,
+                intent="other",
+                kb_ids=[1],
+            )
+        )
+        await session.commit()
 
 
 async def create_kb(
@@ -199,9 +241,11 @@ async def test_create_list_and_options(client, fake_redis) -> None:
     assert empty_kbs.status_code == 422
 
 
-async def test_conversation_requires_owned_kb(client, fake_redis) -> None:
+async def test_conversation_requires_public_kb_for_normal_user(
+    client, fake_redis
+) -> None:
     alice = await auth_headers(client, fake_redis, "alice")
-    bob = await auth_headers(client, fake_redis, "bob")
+    bob = await auth_headers(client, fake_redis, "bob", admin=False)
     kb = await create_kb(client, alice)
 
     response = await client.post(
@@ -215,7 +259,7 @@ async def test_conversation_requires_owned_kb(client, fake_redis) -> None:
 
 async def test_public_kb_can_be_used_by_other_user(client, fake_redis) -> None:
     alice = await auth_headers(client, fake_redis, "alice")
-    bob = await auth_headers(client, fake_redis, "bob")
+    bob = await auth_headers(client, fake_redis, "bob", admin=False)
     kb = await create_kb(client, alice, "公共售前知识库", is_public=True)
 
     conversation = await create_conversation(client, bob, kb["id"])
@@ -232,7 +276,7 @@ async def test_public_kb_can_be_used_by_other_user(client, fake_redis) -> None:
 
 async def test_private_kb_removed_from_public_scope(client, fake_redis) -> None:
     alice = await auth_headers(client, fake_redis, "alice")
-    bob = await auth_headers(client, fake_redis, "bob")
+    bob = await auth_headers(client, fake_redis, "bob", admin=False)
     kb = await create_kb(client, alice, "临时公共库", is_public=True)
     conversation = await create_conversation(client, bob, kb["id"])
 
@@ -371,7 +415,7 @@ async def test_greeting_skips_retrieval(
 
 
 async def test_low_confidence_hits_are_filtered_and_gap_recorded(
-    client, fake_redis, rag_stubs, monkeypatch
+    client, db_maker, fake_redis, rag_stubs, monkeypatch
 ) -> None:
     headers = await auth_headers(client, fake_redis)
     kb = await create_kb(client, headers)
@@ -399,9 +443,13 @@ async def test_low_confidence_hits_are_filtered_and_gap_recorded(
     meta = next(data for name, data in events if name == "meta")
     assert meta["sources"] == []
 
-    gaps = await client.get("/api/chat/knowledge-gaps", headers=headers)
-    assert gaps.status_code == 200
-    assert gaps.json()[0]["question"] == "支持以旧换新吗？"
+    async with db_maker() as session:
+        gap = await session.scalar(
+            select(KnowledgeGap).where(
+                KnowledgeGap.question == "支持以旧换新吗？"
+            )
+        )
+    assert gap is not None
 
 
 async def test_llm_error_keeps_user_message(
@@ -485,9 +533,10 @@ async def test_archive_and_restore_conversation(client, fake_redis) -> None:
 # 知识缺口运营
 # --------------------------------------------------------------------------- #
 async def test_knowledge_gap_filters_stats_and_status(
-    client, fake_redis, rag_stubs, monkeypatch
+    client, db_maker, fake_redis, rag_stubs, monkeypatch
 ) -> None:
     headers = await auth_headers(client, fake_redis)
+    await promote_admin(db_maker, "alice")
     kb = await create_kb(client, headers)
     conversation = await create_conversation(client, headers, kb["id"])
 
@@ -519,6 +568,7 @@ async def test_knowledge_gap_filters_stats_and_status(
     assert gap["intent_confidence"] is not None
     assert gap["retrieval_mode"] == "rerank"
     assert gap["vector_score"] == 0.12
+    assert gap["username"] == "alice"
 
     resolved_filter = await client.get(
         "/api/chat/knowledge-gaps?status=resolved", headers=headers
@@ -552,6 +602,71 @@ async def test_knowledge_gap_filters_stats_and_status(
         "/api/chat/knowledge-gaps/9999", headers=headers, json={"status": "ignored"}
     )
     assert missing.status_code == 404
+
+
+async def test_knowledge_gap_endpoints_require_admin(client, fake_redis) -> None:
+    headers = await auth_headers(client, fake_redis, admin=False)
+
+    listed = await client.get("/api/chat/knowledge-gaps", headers=headers)
+    assert listed.status_code == 403
+
+    stats = await client.get("/api/chat/knowledge-gaps/stats", headers=headers)
+    assert stats.status_code == 403
+
+    updated = await client.patch(
+        "/api/chat/knowledge-gaps/1",
+        headers=headers,
+        json={"status": "ignored"},
+    )
+    assert updated.status_code == 403
+
+
+async def test_admin_sees_and_updates_all_users_gaps(
+    client, db_maker, fake_redis
+) -> None:
+    admin_headers = await auth_headers(client, fake_redis, "alice")
+    await auth_headers(client, fake_redis, "bob")
+    await promote_admin(db_maker, "alice")
+
+    alice_id = await user_id_by_name(db_maker, "alice")
+    bob_id = await user_id_by_name(db_maker, "bob")
+    await insert_gap(db_maker, alice_id, "alice 的问题")
+    await insert_gap(db_maker, bob_id, "bob 的问题")
+
+    listed = await client.get("/api/chat/knowledge-gaps", headers=admin_headers)
+    assert listed.status_code == 200
+    items = listed.json()
+    assert {item["question"] for item in items} == {"alice 的问题", "bob 的问题"}
+    assert {item["username"] for item in items} == {"alice", "bob"}
+
+    bob_only = await client.get(
+        f"/api/chat/knowledge-gaps?user_id={bob_id}", headers=admin_headers
+    )
+    assert bob_only.status_code == 200
+    assert [item["question"] for item in bob_only.json()] == ["bob 的问题"]
+
+    stats = await client.get(
+        "/api/chat/knowledge-gaps/stats", headers=admin_headers
+    )
+    assert stats.status_code == 200
+    stats_payload = stats.json()
+    assert stats_payload["total"] == 2
+    by_user = {item["username"]: item for item in stats_payload["by_user"]}
+    assert set(by_user) == {"alice", "bob"}
+    assert by_user["alice"]["user_id"] == alice_id
+    assert by_user["alice"]["total"] == 1
+    assert by_user["alice"]["open"] == 1
+    assert by_user["bob"]["total"] == 1
+
+    bob_gap = next(item for item in items if item["username"] == "bob")
+    updated = await client.patch(
+        f"/api/chat/knowledge-gaps/{bob_gap['id']}",
+        headers=admin_headers,
+        json={"status": "resolved", "note": "管理员处理"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "resolved"
+    assert updated.json()["username"] == "bob"
 
 
 # --------------------------------------------------------------------------- #

@@ -25,6 +25,12 @@ def test_rule_hyde_for_abstract_question() -> None:
     assert _rule_strategy("我该如何选择适合自己的尺码") == "hyde"
 
 
+def test_product_recommendation_stays_direct() -> None:
+    """“推荐 / 介绍”属于商品意图，不应把具体商品问句升级为 HyDE。"""
+    assert _rule_strategy("我想在你这里买件短袖,有什么推荐啊") == "direct"
+    assert _rule_strategy("介绍一下你们的冰丝针织衫") == "direct"
+
+
 def test_short_entity_and_amount_questions_stay_direct() -> None:
     assert _rule_strategy("满99包邮吗") == "direct"
     assert _rule_strategy("退货多少钱") == "direct"
@@ -33,6 +39,27 @@ def test_short_entity_and_amount_questions_stay_direct() -> None:
 
 def test_multiple_question_marks_trigger_subquery() -> None:
     assert _rule_strategy("包邮吗？多久到？") == "subquery"
+
+
+async def test_product_recommendation_plan_skips_llm(monkeypatch) -> None:
+    """商品推荐问句直接检索，不发起 HyDE 等 LLM 调用。"""
+    called = {"count": 0}
+
+    async def fake_complete(*args, **kwargs):
+        called["count"] += 1
+        return "不应调用"
+
+    monkeypatch.setattr(qs.llm_service, "complete", fake_complete)
+    plan = await QueryStrategyService().plan(
+        "我想在你这里买件短袖,有什么推荐啊",
+        intent="product",
+        model_name=_MODEL,
+    )
+
+    assert plan.strategy == "direct"
+    assert plan.source == "rule"
+    assert plan.queries == ("我想在你这里买件短袖,有什么推荐啊",)
+    assert called["count"] == 0
 
 
 async def test_disabled_strategy_returns_direct_without_llm(monkeypatch) -> None:
@@ -153,10 +180,10 @@ async def test_hyde_empty_output_falls_back(monkeypatch) -> None:
 async def test_llm_selector_can_upgrade_direct_rule(monkeypatch) -> None:
     monkeypatch.setattr(Config, "strategy_selector_llm_enabled", True)
 
-    async def fake_select(query, model_name):
+    async def fake_select(query, model_name, priority="normal"):
         return "hyde"
 
-    async def fake_hyde(query, model_name):
+    async def fake_hyde(query, model_name, priority="normal"):
         return "这是一段用于检索的假设答案文本。"
 
     monkeypatch.setattr(qs, "select_strategy", fake_select)

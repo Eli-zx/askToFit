@@ -69,8 +69,8 @@ async def seed_run(db_maker, **overrides) -> int:
         "top_k": 10,
         "judge_model": "deepseekv4-flash",
         "ragas_version": "0.3.0",
-        "sample_count": 3,
-        "answerable_count": 2,
+        "sample_count": 60,
+        "answerable_count": 48,
         "retrieval_metrics": {
             "doc": {
                 "hit_at_k": 0.8,
@@ -140,6 +140,8 @@ async def test_admin_overview_and_runs_empty(client, fake_redis, db_maker) -> No
         "latest": None,
         "previous": None,
         "total_runs": 0,
+        "meaningful_runs": 0,
+        "min_samples": 10,
         "delta": None,
     }
 
@@ -257,6 +259,37 @@ async def test_missing_run_returns_404_and_literal_routes_work(
         "/api/evaluations/runs/9999", headers=headers
     )
     assert missing_delete.status_code == 404
+
+
+async def test_low_sample_run_flagged_and_excluded_from_overview(
+    client, fake_redis, db_maker
+) -> None:
+    """1 条样本的运行只出现在列表里，不能成为概览/趋势的“最新”。"""
+    headers = await register_and_login(client, fake_redis, "admin")
+    await make_admin(db_maker, "admin")
+    meaningful = await seed_run(db_maker)
+    low = await seed_run(db_maker, sample_count=1, answerable_count=1)
+
+    overview = (
+        await client.get("/api/evaluations/overview", headers=headers)
+    ).json()
+    assert overview["total_runs"] == 2
+    assert overview["meaningful_runs"] == 1
+    assert overview["min_samples"] == 10
+    assert overview["latest"]["id"] == meaningful
+    assert overview["latest"]["is_meaningful"] is True
+
+    listing = (await client.get("/api/evaluations/runs", headers=headers)).json()
+    assert [item["id"] for item in listing["items"]] == [low, meaningful]
+    assert [item["is_meaningful"] for item in listing["items"]] == [False, True]
+
+    detail = (
+        await client.get(f"/api/evaluations/runs/{low}", headers=headers)
+    ).json()
+    assert detail["is_meaningful"] is False
+
+    trends = (await client.get("/api/evaluations/trends", headers=headers)).json()
+    assert [item["id"] for item in trends["items"]] == [meaningful]
 
 
 async def test_delete_run_then_detail_404(client, fake_redis, db_maker) -> None:

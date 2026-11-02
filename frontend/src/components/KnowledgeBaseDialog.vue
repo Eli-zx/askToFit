@@ -238,23 +238,25 @@ async function submit() {
   position: relative;
   display: flex;
   align-items: flex-start;
-  padding: 13px 15px;
-  background: #fff;
+  padding: 12px 14px;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 13px;
+  border-radius: 1px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease;
   gap: 11px;
 }
 
 .kb-mode:hover {
-  border-color: rgba(91, 91, 214, 0.3);
+  border-color: var(--atf-line-strong);
 }
 
 .kb-mode.is-active {
-  background: #f8f7ff;
-  border-color: rgba(91, 91, 214, 0.45);
-  box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.06);
+  background: var(--atf-brand-soft);
+  border-color: var(--atf-brand);
+  box-shadow: none;
 }
 
 .kb-modes.is-disabled .kb-mode {
@@ -276,7 +278,7 @@ async function submit() {
   color: var(--atf-brand);
   font-size: 16px;
   background: var(--atf-brand-soft);
-  border-radius: 10px;
+  border-radius: var(--atf-radius-sm);
   place-items: center;
 }
 
@@ -303,7 +305,7 @@ async function submit() {
   width: 15px;
   height: 15px;
   margin-top: 2px;
-  border: 1.5px solid #c9cbdc;
+  border: 1.5px solid var(--atf-line-strong);
   border-radius: 50%;
   transition: all 0.2s ease;
 }
@@ -311,7 +313,7 @@ async function submit() {
 .kb-mode.is-active .kb-mode__radio {
   background: var(--atf-brand);
   border-color: var(--atf-brand);
-  box-shadow: inset 0 0 0 3px #fff;
+  box-shadow: inset 0 0 0 3px var(--atf-surface-raised);
 }
 
 .kb-hint {
@@ -331,9 +333,9 @@ async function submit() {
   flex: 1;
   flex-direction: column;
   padding: 13px 14px;
-  background: #faf9ff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 12px;
+  border-radius: var(--atf-radius-sm);
   gap: 6px;
 }
 
@@ -357,16 +359,16 @@ async function submit() {
   width: 100%;
   align-items: center;
   justify-content: space-between;
-  padding: 13px 15px;
-  background: #fff;
+  padding: 12px 14px;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 13px;
+  border-radius: 1px;
   gap: 16px;
 }
 
 .kb-public.is-active {
-  background: linear-gradient(120deg, #f4f3ff, #f0fbf8);
-  border-color: rgba(91, 91, 214, 0.38);
+  background: var(--atf-brand-soft);
+  border-color: var(--atf-brand);
 }
 
 .kb-public__copy {

@@ -85,7 +85,12 @@ watch(
             <span class="gaps__intent">
               {{ INTENT_META[item.intent]?.label || '综合咨询' }}
             </span>
-            <span class="gaps__score">
+            <span
+              class="gaps__score"
+              :title="item.retrieval_mode === 'rerank'
+                ? '最高分取自重排分（交叉编码器相关性概率），与向量分不是同一量纲'
+                : '最高分取自向量分'"
+            >
               最高分 {{ formatScore(item.best_score) }}
             </span>
           </div>
@@ -111,11 +116,10 @@ watch(
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: 11px 0 11px 12px;
   margin-bottom: 16px;
-  background: linear-gradient(120deg, #f4f3ff, #f0fbf8);
-  border: 1px solid var(--atf-line);
-  border-radius: 13px;
+  background: transparent;
+  border-left: 2px solid var(--atf-brand);
   gap: 10px;
 }
 
@@ -177,9 +181,9 @@ watch(
 
 .gaps__item {
   padding: 13px 14px;
-  background: #fbfbff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 12px;
+  border-radius: var(--atf-radius-sm);
 }
 
 .gaps__item-head {
@@ -194,11 +198,12 @@ watch(
   font-size: 9.5px;
   font-weight: 700;
   background: var(--atf-brand-soft);
-  border-radius: 999px;
+  border-radius: 1px;
 }
 
 .gaps__score {
-  color: #a0a3b8;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
 }
@@ -215,7 +220,8 @@ watch(
   display: flex;
   justify-content: space-between;
   margin-top: 7px;
-  color: #aeb1c5;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
 }
 </style>

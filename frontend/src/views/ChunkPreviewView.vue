@@ -22,6 +22,7 @@ import { useAuthStore } from '@/stores/auth'
 import { DOCUMENT_STATUS, EMBEDDING_MODES } from '@/utils/constants'
 import { toErrorMessage } from '@/utils/errors'
 import { formatDateTime, formatFileSize } from '@/utils/format'
+import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -331,12 +332,11 @@ function goBack() {
               </div>
             </div>
 
-            <p
-              class="chunk-card__content"
+            <div
+              class="chunk-card__content markdown-body"
               :class="{ 'is-clamped': isLong(chunk) && !expanded[chunk.uid] }"
-            >
-              {{ chunk.content }}
-            </p>
+              v-html="renderMarkdown(chunk.content)"
+            />
 
             <button
               v-if="isLong(chunk)"
@@ -463,14 +463,15 @@ function goBack() {
   color: var(--atf-brand);
   font-size: 21px;
   background: var(--atf-brand-soft);
-  border-radius: 14px;
+  border-radius: var(--atf-radius-md);
   place-items: center;
 }
 
 .chunk__crumbs {
   display: flex;
   align-items: center;
-  color: #a3a6bd;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
   gap: 5px;
 }
@@ -506,38 +507,39 @@ function goBack() {
 }
 
 .chunk__meta span {
-  color: #8b8eaa;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
 }
 
 .chunk__status {
-  padding: 2px 8px;
+  padding: 0;
   font-weight: 700;
-  border-radius: 999px;
+  border-radius: 0;
 }
 
 .chunk__status.is-completed {
-  color: #137d6d;
-  background: #e3faf5;
+  color: var(--atf-mint);
+  background: transparent;
 }
 
 .chunk__status.is-processing,
 .chunk__status.is-pending {
-  color: #9a6a20;
-  background: #fff8e8;
+  color: var(--atf-tone-gold);
+  background: transparent;
 }
 
 .chunk__status.is-failed {
-  color: #b03a47;
-  background: #ffecef;
+  color: var(--atf-brand-deep);
+  background: transparent;
 }
 
 .chunk__readonly {
   padding: 2px 8px;
-  color: #6846d8 !important;
+  color: var(--atf-muted) !important;
   font-weight: 700;
-  background: #efeaff;
-  border-radius: 999px;
+  background: var(--atf-tone-gray-bg);
+  border-radius: 1px;
 }
 
 .chunk__actions {
@@ -553,9 +555,9 @@ function goBack() {
   justify-content: space-between;
   padding: 13px 16px;
   margin-top: 22px;
-  background: #fff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 14px;
+  border-radius: var(--atf-radius-md);
   gap: 16px;
 }
 
@@ -578,13 +580,14 @@ function goBack() {
 .chunk__toolbar-meta {
   display: flex;
   align-items: center;
-  color: #a3a6bd;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
   gap: 7px;
 }
 
 .chunk__dot {
-  color: #d0d2e0;
+  color: var(--atf-line-strong);
 }
 
 .chunk__loading {
@@ -630,15 +633,15 @@ function goBack() {
 
 .chunk-card {
   padding: 16px 18px 15px;
-  background: #fff;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 15px;
+  border-radius: var(--atf-radius-md);
   transition: all 0.22s ease;
 }
 
 .chunk-card:hover {
-  border-color: rgba(91, 91, 214, 0.18);
-  box-shadow: 0 8px 24px rgba(43, 38, 95, 0.06);
+  border-color: var(--atf-line-strong);
+  box-shadow: var(--atf-shadow-sm);
 }
 
 .chunk-card__head {
@@ -676,13 +679,14 @@ function goBack() {
 }
 
 .chunk-card__titles span {
-  color: #a3a6bd;
+  color: var(--atf-muted);
   font-size: 9.5px;
 }
 
 .chunk-card__chars {
   flex: none;
-  color: #a3a6bd;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
 }
@@ -710,11 +714,25 @@ function goBack() {
 
 .chunk-card__content {
   margin-top: 10px;
-  color: #5f6280;
-  font-size: 12px;
-  line-height: 1.85;
-  white-space: pre-wrap;
+  color: var(--atf-ink-soft);
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: normal;
   word-break: break-word;
+}
+
+/* 分块里的 Markdown 表格已经排版，不要再套一层卡片感 */
+.chunk-card__content.markdown-body table {
+  font-size: 12px;
+}
+
+.chunk-card__content.markdown-body th,
+.chunk-card__content.markdown-body td {
+  padding: 6px 9px;
+}
+
+.chunk-card__content.markdown-body p {
+  margin-bottom: 6px;
 }
 
 .chunk-card__content.is-clamped {
@@ -735,12 +753,14 @@ function goBack() {
   cursor: pointer;
 }
 
+/* 父块入口收成卡片底部的一行脚注，不再套一层小盒子 */
 .chunk-card__parent {
-  padding: 9px 11px;
+  padding: 7px 1px 0;
   margin-top: 10px;
-  background: #faf9ff;
-  border: 1px dashed var(--atf-line-strong);
-  border-radius: 10px;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--atf-line);
+  border-radius: 0;
 }
 
 .chunk-card__parent-toggle {
@@ -755,9 +775,12 @@ function goBack() {
 }
 
 .chunk-card__parent-label {
-  color: #6846d8;
-  font-size: 10px;
-  font-weight: 700;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .chunk-card__parent-meta {
@@ -776,12 +799,12 @@ function goBack() {
 .chunk-card__parent-content {
   margin-top: 8px;
   padding-top: 8px;
-  color: #6f7290;
+  color: var(--atf-ink-soft);
   font-size: 11px;
   line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
-  border-top: 1px dashed var(--atf-line);
+  border-top: 1px solid var(--atf-line);
 }
 
 .chunk__pagination {
@@ -796,9 +819,9 @@ function goBack() {
   align-items: center;
   padding: 9px 12px;
   margin-bottom: 12px;
-  background: #faf9ff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 9px;
+  border-radius: var(--atf-radius-sm);
   gap: 9px;
 }
 

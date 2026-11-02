@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Check, Close, Refresh, Search, Tickets } from '@element-plus/icons-vue'
+import { Check, Close, Refresh, Search } from '@element-plus/icons-vue'
 
 import {
   fetchKnowledgeGapStats,
@@ -11,6 +11,7 @@ import {
 import { INTENT_META } from '@/utils/constants'
 import { toErrorMessage } from '@/utils/errors'
 import { formatDateTime, formatScore } from '@/utils/format'
+import { groupGapsByUser } from '@/utils/knowledge-gaps'
 
 const PAGE_SIZE = 20
 
@@ -29,6 +30,7 @@ const filters = reactive({
   status: 'open',
   intent: '',
   q: '',
+  userId: null,
 })
 
 const STATUS_META = {
@@ -55,9 +57,54 @@ const statsCards = computed(() => {
   ]
 })
 
-const trendMax = computed(() =>
-  Math.max(1, ...(stats.value?.by_date || []).map((item) => item.count)),
+// 按最近 14 个自然日补齐没有缺口的日期，避免柱状图把稀疏数据画成等距分布
+const trendDays = computed(() => {
+  const byDate = new Map(
+    (stats.value?.by_date || []).map((item) => [item.key, item.count]),
+  )
+  const now = new Date()
+  return Array.from({ length: 14 }, (_, index) => {
+    const date = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - (13 - index),
+    )
+    const key = [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+    ].join('-')
+    return { key, count: byDate.get(key) || 0 }
+  })
+})
+
+const trendTotal = computed(() =>
+  (stats.value?.by_date || []).reduce((sum, item) => sum + item.count, 0),
 )
+
+const trendMax = computed(() =>
+  Math.max(1, ...trendDays.value.map((item) => item.count)),
+)
+
+const trendHalf = computed(() => Math.round(trendMax.value / 2))
+
+const userOptions = computed(() =>
+  (stats.value?.by_user || []).map((user) => ({
+    value: user.user_id,
+    label: `${user.username}（${user.total}）`,
+  })),
+)
+
+const userTotalMap = computed(() => {
+  const map = {}
+  for (const user of stats.value?.by_user || []) {
+    map[user.user_id] = user.total
+  }
+  return map
+})
+
+// 管理员看到所有用户的数据，按提交人分组展示；顺序沿用列表的时间倒序。
+const groupedItems = computed(() => groupGapsByUser(items.value))
 
 function intentLabel(intent) {
   return INTENT_META[intent]?.label || '综合咨询'
@@ -87,6 +134,8 @@ async function loadGaps() {
       status: filters.status,
       intent: filters.intent || undefined,
       q: filters.q.trim() || undefined,
+      // el-select 清空后会给出空字符串，不能直接传给后端整数参数。
+      user_id: filters.userId || undefined,
     })
     items.value = data
     hasNext.value = data.length === PAGE_SIZE
@@ -121,6 +170,7 @@ function resetFilters() {
   filters.status = 'open'
   filters.intent = ''
   filters.q = ''
+  filters.userId = null
   applyFilters()
 }
 
@@ -205,22 +255,48 @@ onMounted(refresh)
       <section v-if="stats?.by_date?.length" class="gap-trend">
         <div class="gap-trend__head">
           <strong>近 14 天新增</strong>
-          <span>共 {{ stats.by_date.reduce((sum, item) => sum + item.count, 0) }} 条</span>
+          <span>共 {{ trendTotal }} 条</span>
         </div>
-        <div class="gap-trend__bars">
-          <div
-            v-for="item in stats.by_date"
-            :key="item.key"
-            class="gap-trend__bar"
-            :title="`${item.key}：${item.count} 条`"
-          >
-            <i :style="{ height: `${Math.max(6, (item.count / trendMax) * 100)}%` }" />
-            <small>{{ item.key.slice(5) }}</small>
+        <div class="gap-trend__plot">
+          <div class="gap-trend__axis" aria-hidden="true">
+            <span>{{ trendMax }}</span>
+            <span>{{ trendHalf }}</span>
+            <span>0</span>
+          </div>
+          <div class="gap-trend__bars">
+            <div
+              v-for="item in trendDays"
+              :key="item.key"
+              class="gap-trend__bar"
+              :class="{ 'is-empty': !item.count }"
+              :title="`${item.key}：${item.count} 条`"
+            >
+              <i
+                :style="{
+                  height: `${item.count ? Math.max(6, (item.count / trendMax) * 100) : 2}%`,
+                }"
+              />
+              <small>{{ item.key.slice(5) }}</small>
+            </div>
           </div>
         </div>
       </section>
 
       <section class="gap-filters">
+        <el-select
+          v-model="filters.userId"
+          clearable
+          placeholder="全部用户"
+          aria-label="用户筛选"
+          @change="applyFilters"
+        >
+          <el-option
+            v-for="option in userOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
         <el-select v-model="filters.status" aria-label="状态筛选" @change="applyFilters">
           <el-option label="全部状态" value="all" />
           <el-option label="待处理" value="open" />
@@ -251,81 +327,99 @@ onMounted(refresh)
             <el-icon><Search /></el-icon>
           </template>
         </el-input>
-        <el-button type="primary" @click="applyFilters">筛选</el-button>
+        <el-button class="gap-filters__submit" @click="applyFilters">筛选</el-button>
         <el-button text @click="resetFilters">重置</el-button>
       </section>
 
       <section v-loading="loading" class="gap-list">
         <div v-if="!items.length && !loading" class="gap-empty">
-          <div class="gap-empty__icon">
-            <el-icon><Tickets /></el-icon>
-          </div>
           <strong>当前筛选下没有知识缺口</strong>
           <span>调整筛选条件，或等待新的未命中问题沉淀</span>
         </div>
 
-        <article v-for="item in items" :key="item.id" class="gap-card">
-          <div class="gap-card__head">
-            <div class="gap-card__tags">
-              <span class="gap-card__intent" :class="`tone-${intentTone(item.intent)}`">
-                {{ intentLabel(item.intent) }}
-              </span>
-              <span class="gap-card__source">
-                {{ sourceLabel(item.intent_source) }} · {{ confidenceText(item) }}
-              </span>
-              <el-tag :type="STATUS_META[item.status]?.type || 'info'" size="small" effect="light">
-                {{ STATUS_META[item.status]?.label || item.status }}
-              </el-tag>
+        <section
+          v-for="group in groupedItems"
+          :key="group.key"
+          class="gap-group"
+        >
+          <header class="gap-group__head">
+            <strong>{{ group.username }}</strong>
+            <span>
+              本页 {{ group.items.length }} 条<template v-if="userTotalMap[group.userId]">
+                · 共 {{ userTotalMap[group.userId] }} 条</template>
+            </span>
+          </header>
+
+          <article v-for="item in group.items" :key="item.id" class="gap-card">
+            <div class="gap-card__head">
+              <div class="gap-card__tags">
+                <span class="gap-card__intent" :class="`tone-${intentTone(item.intent)}`">
+                  {{ intentLabel(item.intent) }}
+                </span>
+                <span class="gap-card__source">
+                  {{ sourceLabel(item.intent_source) }} · {{ confidenceText(item) }}
+                </span>
+                <el-tag :type="STATUS_META[item.status]?.type || 'info'" size="small" effect="light">
+                  {{ STATUS_META[item.status]?.label || item.status }}
+                </el-tag>
+              </div>
+              <span class="gap-card__time">{{ formatDateTime(item.created_at) }}</span>
             </div>
-            <span class="gap-card__time">{{ formatDateTime(item.created_at) }}</span>
-          </div>
 
-          <p class="gap-card__question">{{ item.question }}</p>
+            <p class="gap-card__question">{{ item.question }}</p>
 
-          <div class="gap-card__scores">
-            <span>最高分 {{ formatScore(item.best_score) }}</span>
-            <span>向量 {{ formatScore(item.vector_score) }}</span>
-            <span>重排 {{ formatScore(item.rerank_score) }}</span>
-            <span>模式 {{ item.retrieval_mode || '—' }}</span>
-            <span>知识库 {{ (item.kb_ids || []).join(' / ') || '—' }}</span>
-          </div>
+            <div class="gap-card__scores">
+              <span>最高分 {{ formatScore(item.best_score) }}</span>
+              <span title="混合检索归一化分：与问题无关的内容通常也有 0.65～0.75，不能单独用来判断相关性">
+                向量 {{ formatScore(item.vector_score) }}
+              </span>
+              <span title="交叉编码器相关性概率：达到 0.25 才会进入回答，接近 0 表示资料答非所问">
+                重排 {{ formatScore(item.rerank_score) }}
+              </span>
+              <span>模式 {{ item.retrieval_mode || '—' }}</span>
+              <span>知识库 {{ (item.kb_ids || []).join(' / ') || '—' }}</span>
+            </div>
+            <p v-if="item.retrieval_mode === 'rerank'" class="gap-card__score-hint">
+              向量分与重排分不是同一量纲，判断资料是否相关请以重排分为准。
+            </p>
 
-          <p v-if="item.note" class="gap-card__note">{{ item.note }}</p>
+            <p v-if="item.note" class="gap-card__note">{{ item.note }}</p>
 
-          <div class="gap-card__actions">
-            <el-button
-              v-if="item.status !== 'resolved'"
-              size="small"
-              type="success"
-              plain
-              @click="setStatus(item, 'resolved')"
-            >
-              <el-icon><Check /></el-icon>
-              标记已解决
-            </el-button>
-            <el-button
-              v-if="item.status !== 'ignored'"
-              size="small"
-              plain
-              @click="setStatus(item, 'ignored')"
-            >
-              <el-icon><Close /></el-icon>
-              忽略
-            </el-button>
-            <el-button
-              v-if="item.status !== 'open'"
-              size="small"
-              plain
-              type="warning"
-              @click="setStatus(item, 'open')"
-            >
-              重新打开
-            </el-button>
-            <el-button size="small" text @click="openNote(item)">
-              {{ item.note ? '编辑备注' : '添加备注' }}
-            </el-button>
-          </div>
-        </article>
+            <div class="gap-card__actions">
+              <el-button
+                v-if="item.status !== 'resolved'"
+                size="small"
+                type="success"
+                plain
+                @click="setStatus(item, 'resolved')"
+              >
+                <el-icon><Check /></el-icon>
+                标记已解决
+              </el-button>
+              <el-button
+                v-if="item.status !== 'ignored'"
+                size="small"
+                plain
+                @click="setStatus(item, 'ignored')"
+              >
+                <el-icon><Close /></el-icon>
+                忽略
+              </el-button>
+              <el-button
+                v-if="item.status !== 'open'"
+                size="small"
+                plain
+                type="warning"
+                @click="setStatus(item, 'open')"
+              >
+                重新打开
+              </el-button>
+              <el-button size="small" text @click="openNote(item)">
+                {{ item.note ? '编辑备注' : '添加备注' }}
+              </el-button>
+            </div>
+          </article>
+        </section>
       </section>
 
       <div class="gap-pager">
@@ -361,58 +455,67 @@ onMounted(refresh)
   gap: 18px;
 }
 
+/* 通栏指标带，和知识库 / 评估页保持同一套版式 */
 .gap-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  border-top: 1px solid var(--atf-line-strong);
+  border-bottom: 1px solid var(--atf-line-strong);
 }
 
 .gap-stat {
   display: flex;
   flex-direction: column;
-  padding: 16px 18px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  border-radius: 15px;
-  box-shadow: var(--atf-shadow-sm);
+  padding: 18px 26px 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   gap: 8px;
+}
+
+.gap-stat + .gap-stat {
+  border-left: 1px solid var(--atf-line);
+}
+
+.gap-stat:first-child {
+  padding-left: 0;
 }
 
 .gap-stat span {
   color: var(--atf-muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .gap-stat strong {
   color: var(--atf-ink);
-  font-size: 26px;
-  font-weight: 760;
+  font-family: var(--atf-font-display);
+  font-size: clamp(32px, 3.2vw, 44px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
   font-variant-numeric: tabular-nums;
 }
 
-.gap-stat--orange strong {
-  color: #b06a1c;
-}
-
-.gap-stat--mint strong {
-  color: #1d8a70;
-}
-
+.gap-stat--orange strong,
+.gap-stat--mint strong,
 .gap-stat--gray strong {
-  color: #6b6f86;
+  color: var(--atf-ink);
 }
 
 .gap-stat--violet strong {
-  color: var(--atf-brand-deep);
+  color: var(--atf-ink);
 }
 
 .gap-trend {
   padding: 16px 18px;
   margin-top: 14px;
-  background: #fff;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 15px;
+  border-radius: var(--atf-radius-md);
 }
 
 .gap-trend__head {
@@ -428,11 +531,39 @@ onMounted(refresh)
   font-size: 10.5px;
 }
 
+.gap-trend__plot {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 12px;
+  gap: 10px;
+}
+
+.gap-trend__axis {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 22px;
+  height: 90px;
+  margin-bottom: 18px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .gap-trend__bars {
   display: flex;
+  flex: 1;
   align-items: flex-end;
   height: 90px;
-  margin-top: 12px;
+  border-bottom: 1px solid var(--atf-line-strong);
+  background-image: repeating-linear-gradient(
+    to top,
+    var(--atf-line) 0 1px,
+    transparent 1px 25%
+  );
   gap: 8px;
 }
 
@@ -449,25 +580,39 @@ onMounted(refresh)
 .gap-trend__bar i {
   width: 100%;
   max-width: 34px;
-  background: linear-gradient(180deg, #8b7cf6, #5b5bd6);
-  border-radius: 6px 6px 3px 3px;
-  opacity: 0.82;
+  background: var(--atf-brand);
+  border-radius: 1px 1px 0 0;
+  opacity: 0.85;
+}
+
+.gap-trend__bar.is-empty i {
+  background: var(--atf-line-strong);
+  opacity: 0.6;
 }
 
 .gap-trend__bar small {
-  color: #aeb1c5;
-  font-size: 8.5px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
   white-space: nowrap;
 }
 
+.gap-trend__bar.is-empty small {
+  color: var(--atf-placeholder);
+}
+
+/* 筛选条做成两条细线之间的一条工具行，不再套卡片 */
 .gap-filters {
   display: flex;
   align-items: center;
-  padding: 12px;
-  margin: 16px 0;
-  background: #fbfaff;
-  border: 1px solid var(--atf-line);
-  border-radius: 13px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  margin: 18px 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--atf-line-strong);
+  border-bottom: 1px solid var(--atf-line);
+  border-radius: 0;
   gap: 10px;
 }
 
@@ -479,11 +624,52 @@ onMounted(refresh)
   max-width: 260px;
 }
 
+.gap-filters__submit {
+  height: 32px;
+  padding: 0 16px;
+  color: var(--atf-brand-deep);
+  font-size: 11.5px;
+  background: transparent;
+  border: 1px solid var(--atf-line-strong);
+  border-radius: 0;
+}
+
+.gap-filters__submit:hover,
+.gap-filters__submit:focus {
+  color: var(--atf-brand);
+  background: var(--atf-wash);
+  border-color: var(--atf-brand);
+}
+
 .gap-list {
   display: flex;
   flex-direction: column;
   min-height: 160px;
+  gap: 14px;
+}
+
+.gap-group {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+}
+
+.gap-group__head {
+  display: flex;
+  align-items: baseline;
+  padding: 0 4px;
+  color: var(--atf-ink-soft);
+  gap: 8px;
+}
+
+.gap-group__head strong {
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.gap-group__head span {
+  color: var(--atf-muted);
+  font-size: 10px;
 }
 
 .gap-empty {
@@ -494,18 +680,6 @@ onMounted(refresh)
   color: var(--atf-muted);
   text-align: center;
   gap: 6px;
-}
-
-.gap-empty__icon {
-  display: grid;
-  width: 46px;
-  height: 46px;
-  margin-bottom: 6px;
-  color: var(--atf-brand);
-  font-size: 20px;
-  background: var(--atf-brand-soft);
-  border-radius: 50%;
-  place-items: center;
 }
 
 .gap-empty strong {
@@ -519,10 +693,9 @@ onMounted(refresh)
 
 .gap-card {
   padding: 15px 17px;
-  background: #fff;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 14px;
-  box-shadow: var(--atf-shadow-sm);
+  border-radius: var(--atf-radius-md);
 }
 
 .gap-card__head {
@@ -541,30 +714,33 @@ onMounted(refresh)
 
 .gap-card__intent {
   padding: 2px 9px;
-  font-size: 9.5px;
-  font-weight: 700;
-  border-radius: 999px;
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  border-radius: 1px;
 }
 
-.tone-violet { color: #5b4bc4; background: #eeebff; }
-.tone-blue { color: #2563a8; background: #e8f2ff; }
-.tone-mint { color: #137d6d; background: #e3faf5; }
-.tone-orange { color: #a86118; background: #fff3e4; }
-.tone-red { color: #b03a47; background: #ffecef; }
-.tone-pink { color: #a63c72; background: #ffeaf4; }
-.tone-gold { color: #916612; background: #fdf5dd; }
-.tone-teal { color: #16697a; background: #e5f8fb; }
-.tone-gray { color: #61657d; background: #f1f2f7; }
+.tone-violet { color: var(--atf-brand-deep); background: var(--atf-brand-soft); }
+.tone-blue { color: var(--atf-tone-blue); background: var(--atf-tone-blue-bg); }
+.tone-mint { color: var(--atf-mint); background: var(--atf-tone-mint-bg); }
+.tone-orange { color: var(--atf-peach); background: var(--atf-tone-peach-bg); }
+.tone-red { color: var(--atf-tone-red); background: var(--atf-tone-red-bg); }
+.tone-pink { color: var(--atf-tone-pink); background: var(--atf-tone-pink-bg); }
+.tone-gold { color: var(--atf-tone-gold); background: var(--atf-tone-gold-bg); }
+.tone-teal { color: var(--atf-tone-teal); background: var(--atf-tone-teal-bg); }
+.tone-gray { color: var(--atf-ink-soft); background: var(--atf-tone-gray-bg); }
 
 .gap-card__source {
-  color: #9a9db2;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .gap-card__time {
   flex: none;
-  color: #aeb1c5;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
 }
 
@@ -580,20 +756,29 @@ onMounted(refresh)
   display: flex;
   flex-wrap: wrap;
   margin-top: 8px;
-  color: #8e91a8;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   gap: 12px;
 }
 
+.gap-card__score-hint {
+  margin-top: 5px;
+  color: var(--atf-muted);
+  font-size: 9.5px;
+  line-height: 1.6;
+}
+
 .gap-card__note {
   padding: 8px 11px;
   margin-top: 9px;
-  color: #6d7088;
+  color: var(--atf-ink-soft);
   font-size: 11px;
   line-height: 1.65;
-  background: #f7f7fc;
-  border-radius: 9px;
+  background: var(--atf-surface);
+  border-left: 2px solid var(--atf-line-strong);
+  border-radius: 0;
 }
 
 .gap-card__actions {
@@ -617,6 +802,19 @@ onMounted(refresh)
 @media (max-width: 860px) {
   .gap-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gap-stat {
+    padding: 16px 16px 14px;
+  }
+
+  .gap-stat:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .gap-stat:nth-child(n + 3) {
+    border-top: 1px solid var(--atf-line);
   }
 
   .gap-filters {

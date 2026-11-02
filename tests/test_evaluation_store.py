@@ -17,8 +17,8 @@ def _run_payload(**overrides) -> dict:
         "top_k": 10,
         "judge_model": "deepseekv4-flash",
         "ragas_version": "0.3.0",
-        "sample_count": 2,
-        "answerable_count": 1,
+        "sample_count": 60,
+        "answerable_count": 48,
         "retrieval_metrics": {"doc": {"hit_at_k": 1.0}},
         "generation_metrics": {"faithfulness": 0.8},
         "config_snapshot": {"bm25_mode": "fuse"},
@@ -214,7 +214,106 @@ async def test_overview_uses_latest_and_previous_success(db_maker) -> None:
 async def test_overview_empty_database(db_maker) -> None:
     async with db_maker() as db:
         overview = await store.get_overview(db)
-        assert overview == {"latest": None, "previous": None, "total_runs": 0}
+        assert overview == {
+            "latest": None,
+            "previous": None,
+            "total_runs": 0,
+            "meaningful_runs": 0,
+            "min_samples": 10,
+        }
+
+
+async def test_overview_ignores_runs_below_sample_threshold(db_maker) -> None:
+    """小样本运行不能成为概览里的“最近一次”，避免 1 条样本全 1.0。"""
+    async with db_maker() as db:
+        meaningful_id = await store.save_eval_run(
+            db,
+            _run_payload(
+                sample_count=60,
+                retrieval_metrics={"doc": {"hit_at_k": 0.7}},
+            ),
+            [],
+            None,
+        )
+        await store.save_eval_run(
+            db,
+            _run_payload(
+                sample_count=1,
+                answerable_count=1,
+                retrieval_metrics={"doc": {"hit_at_k": 1.0}},
+            ),
+            [],
+            None,
+        )
+
+        overview = await store.get_overview(db)
+
+        assert overview["latest"].id == meaningful_id
+        assert overview["previous"] is None
+        assert overview["total_runs"] == 2
+        assert overview["meaningful_runs"] == 1
+        assert overview["min_samples"] == 10
+
+
+async def test_overview_sample_threshold_is_parameterized(db_maker) -> None:
+    async with db_maker() as db:
+        first = await store.save_eval_run(
+            db, _run_payload(sample_count=4), [], None
+        )
+        second = await store.save_eval_run(
+            db, _run_payload(sample_count=6), [], None
+        )
+
+        default = await store.get_overview(db)
+        assert default["latest"] is None
+        assert default["meaningful_runs"] == 0
+
+        custom = await store.get_overview(db, min_samples=5)
+        assert custom["latest"].id == second
+        assert custom["previous"] is None
+        assert custom["meaningful_runs"] == 1
+
+        relaxed = await store.get_overview(db, min_samples=2)
+        assert relaxed["latest"].id == second
+        assert relaxed["previous"].id == first
+        assert relaxed["meaningful_runs"] == 2
+
+
+async def test_trends_exclude_low_sample_runs(db_maker) -> None:
+    async with db_maker() as db:
+        await store.save_eval_run(
+            db,
+            _run_payload(
+                sample_count=60,
+                retrieval_metrics={"doc": {"hit_at_k": 0.5}},
+            ),
+            [],
+            None,
+        )
+        await store.save_eval_run(
+            db,
+            _run_payload(
+                sample_count=2,
+                retrieval_metrics={"doc": {"hit_at_k": 1.0}},
+            ),
+            [],
+            None,
+        )
+        await store.save_eval_run(
+            db,
+            _run_payload(
+                sample_count=30,
+                retrieval_metrics={"doc": {"hit_at_k": 0.8}},
+            ),
+            [],
+            None,
+        )
+
+        trends = await store.list_eval_trends(db, limit=10)
+
+        assert [
+            row.retrieval_metrics["doc"]["hit_at_k"] for row in trends
+        ] == [0.5, 0.8]
 
 
 async def test_trends_return_success_only_in_chronological_order(db_maker) -> None:

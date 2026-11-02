@@ -7,6 +7,7 @@ import {
   formatRelativeTime,
   formatScore,
   formatTime,
+  knowledgeMark,
   truncate,
 } from '@/utils/format'
 
@@ -51,6 +52,21 @@ describe('truncate', () => {
     expect(truncate('abc', 4)).toBe('abc')
     expect(truncate('', 4)).toBe('')
     expect(truncate(null)).toBe('')
+  })
+})
+
+describe('knowledgeMark', () => {
+  it('服装季名称转为季代码', () => {
+    expect(knowledgeMark('服装售前知识库（2026 春夏）')).toBe('SS26')
+    expect(knowledgeMark('2026 秋冬系列')).toBe('AW26')
+    expect(knowledgeMark('2025春夏')).toBe('SS25')
+  })
+
+  it('非季名称退回首字', () => {
+    expect(knowledgeMark('民法典')).toBe('民')
+    expect(knowledgeMark('售后政策（2026）')).toBe('售')
+    expect(knowledgeMark('')).toBe('档')
+    expect(knowledgeMark(null)).toBe('档')
   })
 })
 

@@ -17,11 +17,11 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_admin, get_current_user
 from app.core.logger import get_logger
 from app.db.session import get_db
 from app.models.chunk import Chunk
@@ -40,11 +40,11 @@ from app.schemas.knowledge import (
     ParentChunkOut,
 )
 from app.services.dedup import content_hash
-from app.services.ingestion import ingest_document, refresh_chunk_vector
 from app.services.mineru_parser import (
     mineru_status,
     mineru_supported,
 )
+from app.services.outbox import enqueue_outbox, flush_outbox_entry
 from app.services.search_index import invalidate_search_caches
 from app.services.storage import (
     UnsupportedFileTypeError,
@@ -52,7 +52,8 @@ from app.services.storage import (
     delete_stored_file,
     save_upload,
 )
-from app.services.vector_store import vector_store
+from app.services.task_queue import enqueue_document_task
+from app.services.task_worker import execute_task, task_worker
 from config import Config
 
 logger = get_logger(__name__)
@@ -64,7 +65,7 @@ VALID_PARSERS = {"auto", "mineru"}
 
 
 @router.get("/parsers/options", summary="解析器可用性")
-async def parser_options() -> dict:
+async def parser_options(user: User = Depends(get_current_admin)) -> dict:
     """返回上传弹窗需要的解析器状态，MinerU 不可用时给出原因。"""
     status = await asyncio.to_thread(mineru_status)
     return {
@@ -86,50 +87,33 @@ async def parser_options() -> dict:
 # --------------------------------------------------------------------------- #
 # 权限与查询辅助
 # --------------------------------------------------------------------------- #
-def _kb_scope(user: User, *, owner_only: bool):
-    """知识库可见范围：私有仅创建者可见，公开库所有登录用户可读。"""
-    if owner_only:
-        return KnowledgeBase.owner_id == user.id
-    return or_(
-        KnowledgeBase.owner_id == user.id, KnowledgeBase.is_public.is_(True)
-    )
+def _kb_scope(user: User):
+    """知识库可见范围：管理员全量；普通用户只读公开知识库。"""
+    if user.is_admin:
+        return true()
+    return KnowledgeBase.is_public.is_(True)
 
 
-async def _get_kb(
-    kb_id: int, user: User, db: AsyncSession, *, owner_only: bool = False
-) -> KnowledgeBase:
-    kb = await db.scalar(
-        select(KnowledgeBase).where(
-            KnowledgeBase.id == kb_id, _kb_scope(user, owner_only=owner_only)
-        )
-    )
+async def _get_kb(kb_id: int, db: AsyncSession) -> KnowledgeBase:
+    # 管理接口统一由 get_current_admin 鉴权，这里只按主键取数
+    kb = await db.get(KnowledgeBase, kb_id)
     if kb is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "知识库不存在")
     return kb
 
 
-async def _get_document(
-    doc_id: int, user: User, db: AsyncSession, *, owner_only: bool = False
-) -> Document:
-    stmt = (
-        select(Document)
-        .join(KnowledgeBase, Document.kb_id == KnowledgeBase.id)
-        .where(Document.id == doc_id, _kb_scope(user, owner_only=owner_only))
-    )
-    document = await db.scalar(stmt)
+async def _get_document(doc_id: int, db: AsyncSession) -> Document:
+    document = await db.get(Document, doc_id)
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "文档不存在")
     return document
 
 
-async def _get_chunk(
-    uid: str, user: User, db: AsyncSession, *, owner_only: bool = False
-) -> tuple[Chunk, Document]:
+async def _get_chunk(uid: str, db: AsyncSession) -> tuple[Chunk, Document]:
     stmt = (
         select(Chunk, Document)
         .join(Document, Chunk.doc_id == Document.id)
-        .join(KnowledgeBase, Document.kb_id == KnowledgeBase.id)
-        .where(Chunk.uid == uid, _kb_scope(user, owner_only=owner_only))
+        .where(Chunk.uid == uid)
     )
     row = (await db.execute(stmt)).first()
     if row is None:
@@ -201,7 +185,7 @@ def _chunk_out(chunk: Chunk, parents: dict[str, ParentChunk]) -> ChunkOut:
 async def create_knowledge_base(
     payload: KnowledgeBaseCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> KnowledgeBase:
     exists = await db.scalar(
         select(KnowledgeBase.id).where(
@@ -240,12 +224,7 @@ async def list_knowledge_bases(
 ) -> list[KnowledgeBase]:
     result = await db.scalars(
         select(KnowledgeBase)
-        .where(
-            or_(
-                KnowledgeBase.owner_id == user.id,
-                KnowledgeBase.is_public.is_(True),
-            )
-        )
+        .where(_kb_scope(user))
         .order_by(KnowledgeBase.updated_at.desc(), KnowledgeBase.id.desc())
     )
     return list(result)
@@ -257,9 +236,9 @@ async def list_knowledge_bases(
 async def get_knowledge_base(
     kb_id: int,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> KnowledgeBase:
-    return await _get_kb(kb_id, user, db)
+    return await _get_kb(kb_id, db)
 
 
 @router.patch(
@@ -269,13 +248,14 @@ async def update_knowledge_base(
     kb_id: int,
     payload: KnowledgeBaseUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> KnowledgeBase:
-    kb = await _get_kb(kb_id, user, db, owner_only=True)
+    kb = await _get_kb(kb_id, db)
     if payload.name is not None and payload.name.strip() != kb.name:
+        # 管理员改别人的库时，重名判断要对齐库的创建者，而不是管理员自己
         duplicate = await db.scalar(
             select(KnowledgeBase.id).where(
-                KnowledgeBase.owner_id == user.id,
+                KnowledgeBase.owner_id == kb.owner_id,
                 KnowledgeBase.name == payload.name.strip(),
                 KnowledgeBase.id != kb.id,
             )
@@ -303,25 +283,26 @@ async def update_knowledge_base(
 )
 async def delete_knowledge_base(
     kb_id: int,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> None:
-    kb = await _get_kb(kb_id, user, db, owner_only=True)
-    try:
-        await vector_store.delete_by_kb(kb.id)
-    except Exception:
-        logger.exception("删除知识库向量失败 kb_id=%s", kb.id)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "向量库清理失败，请稍后重试") from None
-
+    kb = await _get_kb(kb_id, db)
     documents = list(
-        await db.scalars(select(Document).where(Document.kb_id == kb.id))
+        await db.scalars(
+            select(Document).where(Document.kb_id == kb.id).with_for_update()
+        )
     )
     await db.execute(delete(Chunk).where(Chunk.kb_id == kb.id))
     await db.execute(delete(ParentChunk).where(ParentChunk.kb_id == kb.id))
     await db.execute(delete(Document).where(Document.kb_id == kb.id))
     await db.execute(delete(KnowledgeBase).where(KnowledgeBase.id == kb.id))
+    # 先提交数据库，向量删除交给 outbox，Milvus 短暂不可用也不会留下“删不掉”的库
+    entry = await enqueue_outbox(db, "delete_kb", {"kb_id": kb.id})
     await db.commit()
     await invalidate_search_caches(kb.id)
+    background_tasks.add_task(flush_outbox_entry, entry.id)
+    task_worker.wake()
 
     for document in documents:
         delete_stored_file(document.file_path)
@@ -352,9 +333,9 @@ async def upload_document(
     force_new: bool = Form(False),
     parser: str = Form("auto"),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> Document:
-    kb = await _get_kb(kb_id, user, db, owner_only=True)
+    kb = await _get_kb(kb_id, db)
 
     size = chunk_size if chunk_size is not None else kb.chunk_size
     overlap = chunk_overlap if chunk_overlap is not None else kb.chunk_overlap
@@ -413,6 +394,8 @@ async def upload_document(
     )
     db.add(document)
     try:
+        await db.flush()
+        task = await enqueue_document_task(db, document_id=document.id, kb_id=kb.id)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -420,13 +403,16 @@ async def upload_document(
         raise
 
     await db.refresh(document)
-    background_tasks.add_task(ingest_document, document.id)
+    # 任务已持久化；BackgroundTasks 只负责尽快执行，重启后由 worker 恢复
+    background_tasks.add_task(execute_task, task.id)
+    task_worker.wake()
     logger.info(
-        "文档已上传 doc_id=%s kb_id=%s file=%s size=%d",
+        "文档已上传 doc_id=%s kb_id=%s file=%s size=%d task_id=%s",
         document.id,
         kb.id,
         saved.original_name,
         saved.file_size,
+        task.id,
     )
     return document
 
@@ -441,9 +427,9 @@ async def list_documents(
     status_filter: str | None = Query(None, alias="status"),
     include_history: bool = Query(False),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> list[Document]:
-    kb = await _get_kb(kb_id, user, db)
+    kb = await _get_kb(kb_id, db)
     stmt = select(Document).where(Document.kb_id == kb.id)
     if not include_history:
         stmt = stmt.where(Document.is_current.is_(True))
@@ -457,9 +443,9 @@ async def list_documents(
 async def get_document(
     doc_id: int,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> Document:
-    return await _get_document(doc_id, user, db)
+    return await _get_document(doc_id, db)
 
 
 @router.post(
@@ -472,9 +458,9 @@ async def reindex_document(
     doc_id: int,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> Document:
-    document = await _get_document(doc_id, user, db, owner_only=True)
+    document = await _get_document(doc_id, db)
     if not document.is_current:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "历史版本或已跳过文档不能重新入库")
     if document.status == "processing":
@@ -484,10 +470,15 @@ async def reindex_document(
 
     document.status = "pending"
     document.error_message = None
+    await db.flush()
+    task = await enqueue_document_task(
+        db, document_id=document.id, kb_id=document.kb_id
+    )
     await db.commit()
     await db.refresh(document)
-    background_tasks.add_task(ingest_document, document.id)
-    logger.info("文档重新入库 doc_id=%s", document.id)
+    background_tasks.add_task(execute_task, task.id)
+    task_worker.wake()
+    logger.info("文档重新入库 doc_id=%s task_id=%s", document.id, task.id)
     return document
 
 
@@ -498,15 +489,15 @@ async def reindex_document(
 )
 async def delete_document(
     doc_id: int,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> None:
-    document = await _get_document(doc_id, user, db, owner_only=True)
-    try:
-        await vector_store.delete_by_doc(document.id)
-    except Exception:
-        logger.exception("删除文档向量失败 doc_id=%s", document.id)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "向量库清理失败，请稍后重试") from None
+    document = await _get_document(doc_id, db)
+    # 与入库任务串行化，避免删除与正在提交的分块互相覆盖
+    await db.execute(
+        select(Document.id).where(Document.id == document.id).with_for_update()
+    )
 
     kb_id = document.kb_id
     await db.execute(delete(Chunk).where(Chunk.doc_id == document.id))
@@ -516,8 +507,11 @@ async def delete_document(
     kb = await db.get(KnowledgeBase, kb_id)
     if kb is not None:
         kb.document_count = await _current_document_count(db, kb_id)
+    entry = await enqueue_outbox(db, "delete_doc", {"doc_id": document.id})
     await db.commit()
     await invalidate_search_caches(kb_id)
+    background_tasks.add_task(flush_outbox_entry, entry.id)
+    task_worker.wake()
     delete_stored_file(document.file_path)
     logger.info("文档已删除 doc_id=%s file=%s", document.id, document.original_name)
 
@@ -536,9 +530,9 @@ async def list_chunks(
     page_size: int = Query(20, ge=1, le=100),
     keyword: str | None = Query(None, max_length=100),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> ChunkListOut:
-    document = await _get_document(doc_id, user, db)
+    document = await _get_document(doc_id, db)
     filters = [Chunk.doc_id == document.id]
     if keyword and keyword.strip():
         filters.append(Chunk.content.contains(keyword.strip()))
@@ -570,9 +564,9 @@ async def list_chunks(
 async def list_parent_chunks(
     doc_id: int,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> list[ParentChunk]:
-    document = await _get_document(doc_id, user, db)
+    document = await _get_document(doc_id, db)
     rows = await db.scalars(
         select(ParentChunk)
         .where(ParentChunk.doc_id == document.id)
@@ -585,9 +579,9 @@ async def list_parent_chunks(
 async def get_chunk(
     uid: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> ChunkOut:
-    chunk, _ = await _get_chunk(uid, user, db)
+    chunk, _ = await _get_chunk(uid, db)
     parents = await _parent_map(db, [chunk])
     return _chunk_out(chunk, parents)
 
@@ -596,10 +590,11 @@ async def get_chunk(
 async def update_chunk(
     uid: str,
     payload: ChunkUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> Chunk:
-    chunk, _ = await _get_chunk(uid, user, db, owner_only=True)
+    chunk, _ = await _get_chunk(uid, db)
     content = payload.content.strip()
     if not content:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "分块内容不能为空")
@@ -608,16 +603,23 @@ async def update_chunk(
     chunk.char_count = len(content)
     chunk.content_hash = content_hash(content)
     try:
-        await refresh_chunk_vector(chunk)
         await db.flush()
         await _refresh_parent_chunk(db, chunk.parent_uid)
+        # 数据库先落盘，向量由 outbox 异步重编码；失败可重试
+        entry = await enqueue_outbox(
+            db, "upsert_chunk", {"chunk_uid": chunk.uid, "kb_id": chunk.kb_id}
+        )
         await db.commit()
         await invalidate_search_caches(chunk.kb_id)
     except Exception:
         await db.rollback()
-        logger.exception("分块更新失败 uid=%s", uid)
+        logger.exception(
+            "分块更新失败 uid=%s（app/api/routes/knowledge.py:update_chunk）", uid
+        )
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "分块更新失败，请稍后重试") from None
 
+    background_tasks.add_task(flush_outbox_entry, entry.id)
+    task_worker.wake()
     await db.refresh(chunk)
     return chunk
 
@@ -627,21 +629,21 @@ async def update_chunk(
 )
 async def delete_chunk(
     uid: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
 ) -> None:
-    chunk, document = await _get_chunk(uid, user, db, owner_only=True)
+    chunk, document = await _get_chunk(uid, db)
     parent_uid = chunk.parent_uid
-    try:
-        await vector_store.delete_by_uid(chunk.uid)
-    except Exception:
-        logger.exception("删除分块向量失败 uid=%s", chunk.uid)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "向量库清理失败，请稍后重试") from None
-
     await db.execute(delete(Chunk).where(Chunk.id == chunk.id))
     await db.flush()
     await _refresh_parent_chunk(db, parent_uid)
     document.chunk_count = max(0, document.chunk_count - 1)
+    entry = await enqueue_outbox(
+        db, "delete_chunk", {"chunk_uid": chunk.uid, "kb_id": document.kb_id}
+    )
     await db.commit()
     await invalidate_search_caches(document.kb_id)
+    background_tasks.add_task(flush_outbox_entry, entry.id)
+    task_worker.wake()
     logger.info("分块已删除 uid=%s doc_id=%s", chunk.uid, document.id)

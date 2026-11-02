@@ -15,6 +15,7 @@ from app.services.cache import answer_key, get_json, set_json
 from app.services.intent import classify_intent_detailed
 from app.services.llm import LLMError, llm_service
 from app.services.metrics import inc
+from app.services.priority import PRIORITY_NORMAL, normalize_priority
 from app.services.rag import (
     build_llm_messages,
     build_rewrite_messages,
@@ -63,7 +64,10 @@ def _filter_qualified(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def rewrite_query(
-    model_name: str, question: str, history: list[dict[str, str]]
+    model_name: str,
+    question: str,
+    history: list[dict[str, str]],
+    priority: str = PRIORITY_NORMAL,
 ) -> str:
     response = await llm_service.complete(
         model_name,
@@ -71,6 +75,7 @@ async def rewrite_query(
         temperature=0.0,
         top_p=0.8,
         max_tokens=160,
+        priority=priority,
     )
     rewritten = clean_rewritten(response, question)
     if rewritten.strip() == question.strip():
@@ -85,7 +90,9 @@ async def rewrite_query(
             (item for item in reversed(user_questions) if not has_follow_up_cue(item)),
             user_questions[-1] if user_questions else "",
         )
-        if context_question:
+        # 上一轮问题已经包含本轮问题时不再拼接，避免把“转人工”改写成“转人工 转人工”，
+        # 重复词会拉低重排序分数，导致本可命中的资料被阈值过滤掉。
+        if context_question and question.strip() not in context_question:
             rewritten = f"{context_question} {question.strip()}"[:500]
     return rewritten
 
@@ -256,11 +263,15 @@ async def stream_reply(
     history_rounds: int,
     history: list[dict[str, str]],
     redis: Any | None = None,
+    priority: str = PRIORITY_NORMAL,
 ) -> AsyncIterator[Event]:
     """生成 SSE 事件：status / meta / delta / done / error。"""
     started = time.perf_counter()
+    priority = normalize_priority(priority)
     intent_result = await classify_intent_detailed(question, redis=redis)
     intent = intent_result.intent
+    intent_ms = (time.perf_counter() - started) * 1000
+    stage_mark = time.perf_counter()
     inc("asktofit_intent_total", {"intent": intent, "source": intent_result.source})
     yield "status", {
         "stage": "retrieving",
@@ -277,7 +288,7 @@ async def stream_reply(
     ):
         try:
             rewritten_query = await rewrite_query(
-                model_name, question, trimmed_history
+                model_name, question, trimmed_history, priority
             )
             logger.info(
                 "查询改写 original=%s rewritten=%s", question[:60], rewritten_query[:80]
@@ -291,6 +302,8 @@ async def stream_reply(
         "strategy_source": "disabled",
         "retrieval_query_count": 0,
     }
+    # 出处预览按实际参与重排的查询词选句段；问候语没有策略计划时用改写后的问句
+    rerank_query = rewritten_query
     if intent != "greeting" and kb_modes:
         plan = StrategyPlan(
             strategy="direct",
@@ -305,11 +318,13 @@ async def stream_reply(
                 model_name=model_name,
                 redis=redis,
                 has_knowledge=bool(kb_modes),
+                priority=priority,
             )
         except Exception:
             logger.exception(
                 "检索策略规划失败，回退直接检索 conversation_id=%s", conversation_id
             )
+        rerank_query = plan.rerank_query or rewritten_query
         strategy_meta = {
             "retrieval_strategy": plan.strategy,
             "strategy_source": plan.source,
@@ -321,6 +336,8 @@ async def stream_reply(
             plan.source,
             [item[:60] for item in plan.queries],
         )
+        strategy_ms = (time.perf_counter() - stage_mark) * 1000
+        retrieval_mark = time.perf_counter()
         try:
             hits = await retrieval_service.retrieve(
                 rewritten_query,
@@ -329,12 +346,17 @@ async def stream_reply(
                 strategy=plan.strategy,
                 queries=plan.queries,
                 rerank_query=plan.rerank_query,
+                priority=priority,
             )
             hits = await retrieval_service.enrich_hits(hits)
+            retrieval_ms = (time.perf_counter() - retrieval_mark) * 1000
         except Exception:
             logger.exception("知识库检索失败 conversation_id=%s", conversation_id)
             yield "error", {"message": "知识库检索失败，请稍后重试"}
             return
+    else:
+        strategy_ms = (time.perf_counter() - stage_mark) * 1000
+        retrieval_ms = 0.0
 
     qualified = _filter_qualified(hits)
     if not qualified and intent != "greeting":
@@ -349,7 +371,8 @@ async def stream_reply(
             intent_source=intent_result.source,
         )
 
-    sources = build_sources(qualified)
+    # 出处预览按实际检索词挑相关句段，而不是截父块开头
+    sources = build_sources(qualified, query=rerank_query)
     yield "meta", {
         "conversation_id": conversation_id,
         "intent": intent,
@@ -404,6 +427,7 @@ async def stream_reply(
         return
 
     parts: list[str] = []
+    ttft_ms: float | None = None
     try:
         async for delta in llm_service.stream_chat(
             model_name,
@@ -411,7 +435,16 @@ async def stream_reply(
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
+            priority=priority,
         ):
+            if ttft_ms is None:
+                ttft_ms = (time.perf_counter() - started) * 1000
+                logger.info(
+                    "首包到达 conversation_id=%s priority=%s ttft=%.0fms",
+                    conversation_id,
+                    priority,
+                    ttft_ms,
+                )
             parts.append(delta)
             yield "delta", {"content": delta}
     except asyncio.CancelledError:
@@ -460,10 +493,15 @@ async def stream_reply(
         latency_ms,
     )
     logger.info(
-        "回答完成 conversation_id=%s intent=%s sources=%d latency=%dms",
+        "回答完成 conversation_id=%s intent=%s sources=%d intent=%.0fms prep=%.0fms "
+        "retrieval=%.0fms ttft=%.0fms latency=%dms",
         conversation_id,
         intent,
         len(sources),
+        intent_ms,
+        strategy_ms,
+        retrieval_ms,
+        ttft_ms or 0.0,
         latency_ms,
     )
     yield "done", {

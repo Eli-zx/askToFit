@@ -13,6 +13,12 @@ from app.services import bm25 as bm25_module
 from app.services.bm25 import BM25Service, tokenize
 
 
+@pytest.fixture(autouse=True)
+def _reset_capacity(monkeypatch):
+    monkeypatch.setattr(bm25_module.Config, "bm25_max_indexed_kbs", 20)
+    monkeypatch.setattr(bm25_module.Config, "bm25_max_total_chunks", 100000)
+
+
 def _row(uid: str, content: str, *, kb_id: int = 1, title: str = "", section: str = "") -> dict:
     return {
         "chunk_uid": uid,
@@ -253,6 +259,73 @@ async def test_coverage_reports_query_term_ratio(monkeypatch) -> None:
 
     assert hits
     assert 0.0 < hits[0]["bm25_coverage"] < 1.0
+
+
+def test_inverted_index_only_maps_existing_terms() -> None:
+    index = BM25Service._build_index(
+        [_row("a", "包邮政策"), _row("b", "退换货规则")]
+    )
+
+    assert {doc_index for doc_index, _ in index.postings["包邮"]} == {0}
+    assert "发票" not in index.postings
+    assert index.document_freq["包邮"] == 1
+    assert index.chunks == 2
+
+
+async def test_search_scoring_runs_in_thread(monkeypatch) -> None:
+    service = BM25Service()
+    calls = {"count": 0}
+    original = bm25_module.asyncio.to_thread
+
+    async def counting_to_thread(func, *args, **kwargs):
+        calls["count"] += 1
+        return await original(func, *args, **kwargs)
+
+    async def fake_load(kb_id: int) -> list[dict]:
+        return [_row("a", "包邮")]
+
+    monkeypatch.setattr(service, "_load_rows", fake_load)
+    monkeypatch.setattr(bm25_module.asyncio, "to_thread", counting_to_thread)
+
+    await service.search("包邮", [1])
+
+    # 索引构建 1 次 + 查询打分 1 次
+    assert calls["count"] >= 2
+
+
+async def test_index_capacity_evicts_least_recently_used(monkeypatch) -> None:
+    monkeypatch.setattr(bm25_module.Config, "bm25_max_indexed_kbs", 1)
+    service = BM25Service()
+
+    async def fake_load(kb_id: int) -> list[dict]:
+        return [_row(f"kb-{kb_id}", "包邮", kb_id=kb_id)]
+
+    monkeypatch.setattr(service, "_load_rows", fake_load)
+
+    await service.search("包邮", [1])
+    await service.search("包邮", [2])
+
+    assert list(service._indexes) == [2]
+    assert service._locks.get(1) is None
+
+
+async def test_index_total_chunks_capacity_is_enforced(monkeypatch) -> None:
+    monkeypatch.setattr(bm25_module.Config, "bm25_max_total_chunks", 2)
+    service = BM25Service()
+
+    async def fake_load(kb_id: int) -> list[dict]:
+        return [
+            _row(f"kb-{kb_id}-a", "包邮", kb_id=kb_id),
+            _row(f"kb-{kb_id}-b", "退换", kb_id=kb_id),
+        ]
+
+    monkeypatch.setattr(service, "_load_rows", fake_load)
+
+    await service.search("包邮", [1])
+    await service.search("包邮", [2])
+
+    # 新索引自身仍被保留，旧的整库索引被淘汰
+    assert list(service._indexes) == [2]
 
 
 @pytest.mark.parametrize("query", ["七天无理由", "退货", "发票"])

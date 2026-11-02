@@ -7,9 +7,12 @@
 from pathlib import Path
 
 import pytest
+from sqlalchemy import update
 
 from app.api.routes import knowledge as knowledge_module
-from app.services import ingestion
+from app.main import app as fastapi_app
+from app.models.user import User
+from app.services import ingestion, outbox, task_worker
 from app.services.captcha import CAPTCHA_KEY_PREFIX
 from app.services.parsers import ParsedBlock, ParsedDocument
 from config import Config
@@ -24,6 +27,9 @@ class FakeVectorStore:
         self.deleted_uids: list[str] = []
 
     async def insert_chunks(self, rows):
+        self.inserted.extend(rows)
+
+    async def upsert_chunks(self, rows):
         self.inserted.extend(rows)
 
     async def upsert_chunk(self, row):
@@ -53,12 +59,13 @@ def fake_store(monkeypatch):
         )
 
     monkeypatch.setattr(ingestion.embedding_service, "embed_documents", fake_embed)
-    monkeypatch.setattr(ingestion.vector_store, "insert_chunks", store.insert_chunks)
-    monkeypatch.setattr(ingestion.vector_store, "upsert_chunk", store.upsert_chunk)
-    monkeypatch.setattr(ingestion.vector_store, "delete_by_doc", store.delete_by_doc)
-    monkeypatch.setattr(ingestion.vector_store, "delete_by_kb", store.delete_by_kb)
-    monkeypatch.setattr(ingestion.vector_store, "delete_by_uid", store.delete_by_uid)
-    monkeypatch.setattr(ingestion.vector_store, "search", store.search)
+    monkeypatch.setattr(outbox.vector_store, "insert_chunks", store.insert_chunks)
+    monkeypatch.setattr(outbox.vector_store, "upsert_chunks", store.upsert_chunks)
+    monkeypatch.setattr(outbox.vector_store, "upsert_chunk", store.upsert_chunk)
+    monkeypatch.setattr(outbox.vector_store, "delete_by_doc", store.delete_by_doc)
+    monkeypatch.setattr(outbox.vector_store, "delete_by_kb", store.delete_by_kb)
+    monkeypatch.setattr(outbox.vector_store, "delete_by_uid", store.delete_by_uid)
+    monkeypatch.setattr(outbox.vector_store, "search", store.search)
     return store
 
 
@@ -73,9 +80,21 @@ def isolated_uploads(monkeypatch, tmp_path):
 @pytest.fixture
 def use_test_db(monkeypatch, db_maker):
     monkeypatch.setattr(ingestion, "get_session_maker", lambda: db_maker)
+    monkeypatch.setattr(task_worker, "get_session_maker", lambda: db_maker)
+    monkeypatch.setattr(outbox, "get_session_maker", lambda: db_maker)
 
 
-async def auth_headers(client, redis, username: str = "alice") -> dict:
+async def set_admin(db_maker, username: str, *, is_admin: bool = True) -> None:
+    async with db_maker() as session:
+        await session.execute(
+            update(User).where(User.username == username).values(is_admin=is_admin)
+        )
+        await session.commit()
+
+
+async def auth_headers(
+    client, redis, username: str = "alice", *, admin: bool = True
+) -> dict:
     captcha = await client.get("/api/auth/captcha")
     captcha_id = captcha.json()["captcha_id"]
     code = await redis.get(CAPTCHA_KEY_PREFIX + captcha_id)
@@ -104,7 +123,14 @@ async def auth_headers(client, redis, username: str = "alice") -> dict:
         },
     )
     assert login.status_code == 200
+    if admin:
+        await set_admin(fastapi_app.state.test_db_maker, username)
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+async def promote_admin(db_maker, username: str) -> None:
+    """把已注册账号提升为管理员，模拟运维用 set_admin 赋权后的状态。"""
+    await set_admin(db_maker, username)
 
 
 async def create_kb(
@@ -212,22 +238,22 @@ async def test_invalid_chunk_params(
     assert resp.status_code == 400
 
 
-async def test_knowledge_base_isolation(
+async def test_private_kb_hidden_from_normal_user(
     client, fake_redis, db_maker, use_test_db, fake_store
 ) -> None:
     alice = await auth_headers(client, fake_redis, "alice")
     kb = await create_kb(client, alice)
-    bob = await auth_headers(client, fake_redis, "bob")
+    bob = await auth_headers(client, fake_redis, "bob", admin=False)
 
     resp = await client.get(f"/api/knowledge_bases/{kb['id']}", headers=bob)
-    assert resp.status_code == 404
+    assert resp.status_code == 403
 
     listing = await client.get("/api/knowledge_bases", headers=bob)
     assert listing.status_code == 200
     assert all(item["id"] != kb["id"] for item in listing.json())
 
 
-async def test_public_kb_readable_but_not_writable_by_others(
+async def test_public_kb_visible_in_list_but_management_is_admin_only(
     client, fake_redis, db_maker, use_test_db, fake_store
 ) -> None:
     alice = await auth_headers(client, fake_redis, "alice")
@@ -240,71 +266,63 @@ async def test_public_kb_readable_but_not_writable_by_others(
     )
     chunk_uid = chunks.json()["items"][0]["uid"]
 
-    bob = await auth_headers(client, fake_redis, "bob")
+    bob = await auth_headers(client, fake_redis, "bob", admin=False)
 
+    # 普通用户可以在聊天选择器里看到公共库，但不能进入管理接口
     listing = await client.get("/api/knowledge_bases", headers=bob)
     assert listing.status_code == 200
     public_item = next(item for item in listing.json() if item["id"] == kb["id"])
     assert public_item["is_public"] is True
     assert public_item["owner_id"] == kb["owner_id"]
 
-    detail = await client.get(f"/api/knowledge_bases/{kb['id']}", headers=bob)
-    assert detail.status_code == 200
-    assert detail.json()["is_public"] is True
-
-    documents = await client.get(
-        f"/api/knowledge_bases/{kb['id']}/documents", headers=bob
-    )
-    assert documents.status_code == 200
-    assert [item["id"] for item in documents.json()] == [document_id]
-
-    document_detail = await client.get(f"/api/documents/{document_id}", headers=bob)
-    assert document_detail.status_code == 200
-
-    chunk_list = await client.get(
-        f"/api/documents/{document_id}/chunks", headers=bob
-    )
-    assert chunk_list.status_code == 200
-    assert chunk_list.json()["total"] > 0
-
-    chunk_detail = await client.get(f"/api/chunks/{chunk_uid}", headers=bob)
-    assert chunk_detail.status_code == 200
-
+    assert (
+        await client.get(f"/api/knowledge_bases/{kb['id']}", headers=bob)
+    ).status_code == 403
+    assert (
+        await client.get(f"/api/knowledge_bases/{kb['id']}/documents", headers=bob)
+    ).status_code == 403
+    assert (
+        await client.get(f"/api/documents/{document_id}", headers=bob)
+    ).status_code == 403
+    assert (
+        await client.get(f"/api/documents/{document_id}/chunks", headers=bob)
+    ).status_code == 403
+    assert (await client.get(f"/api/chunks/{chunk_uid}", headers=bob)).status_code == 403
+    assert (await upload_markdown(client, bob, kb["id"])).status_code == 403
     assert (
         await client.patch(
             f"/api/knowledge_bases/{kb['id']}",
             headers=bob,
             json={"description": "越权修改"},
         )
-    ).status_code == 404
+    ).status_code == 403
     assert (
         await client.delete(f"/api/knowledge_bases/{kb['id']}", headers=bob)
-    ).status_code == 404
-    assert (await upload_markdown(client, bob, kb["id"])).status_code == 404
+    ).status_code == 403
     assert (
         await client.post(f"/api/documents/{document_id}/reindex", headers=bob)
-    ).status_code == 404
+    ).status_code == 403
     assert (
         await client.delete(f"/api/documents/{document_id}", headers=bob)
-    ).status_code == 404
+    ).status_code == 403
     assert (
         await client.patch(
             f"/api/chunks/{chunk_uid}",
             headers=bob,
             json={"content": "越权修改分块"},
         )
-    ).status_code == 404
+    ).status_code == 403
     assert (
         await client.delete(f"/api/chunks/{chunk_uid}", headers=bob)
-    ).status_code == 404
+    ).status_code == 403
 
 
-async def test_owner_can_publish_and_unpublish_kb(
+async def test_admin_can_publish_and_unpublish_kb(
     client, fake_redis, db_maker, use_test_db, fake_store
 ) -> None:
     alice = await auth_headers(client, fake_redis, "alice")
     kb = await create_kb(client, alice)
-    bob = await auth_headers(client, fake_redis, "bob")
+    bob = await auth_headers(client, fake_redis, "bob", admin=False)
 
     before = await client.get("/api/knowledge_bases", headers=bob)
     assert all(item["id"] != kb["id"] for item in before.json())
@@ -410,8 +428,11 @@ async def test_reindex_document(
     detail = await client.get(f"/api/documents/{document_id}", headers=headers)
     assert detail.json()["status"] == "completed"
     assert len(fake_store.inserted) > inserted_after_first
-    # 重建索引只清理旧分块向量，不按文档整体删除（避免误删新向量）
-    assert old_uids.issubset(set(fake_store.deleted_uids))
+    # 确定性 UID：内容未变时重建直接幂等覆盖，且不按文档整体删除
+    assert old_uids == {
+        row["chunk_uid"] for row in fake_store.inserted[inserted_after_first:]
+    }
+    assert document_id not in fake_store.deleted_docs
 
 
 async def test_chunk_pagination_and_keyword(
@@ -456,6 +477,88 @@ async def test_delete_knowledge_base(
     assert (
         await client.get(f"/api/knowledge_bases/{kb['id']}", headers=headers)
     ).status_code == 404
+
+
+async def test_admin_can_manage_other_users_knowledge_base(
+    client, fake_redis, db_maker, use_test_db, fake_store
+) -> None:
+    alice = await auth_headers(client, fake_redis, "alice")
+    kb = await create_kb(client, alice, "私人售后库")
+    upload = await upload_markdown(client, alice, kb["id"])
+    document_id = upload.json()["id"]
+
+    # 模拟历史数据：库由普通用户创建，现在只有管理员能管理
+    await set_admin(db_maker, "alice", is_admin=False)
+
+    admin = await auth_headers(client, fake_redis, "root")
+    await promote_admin(db_maker, "root")
+
+    listing = await client.get("/api/knowledge_bases", headers=admin)
+    assert listing.status_code == 200
+    admin_item = next(item for item in listing.json() if item["id"] == kb["id"])
+    assert admin_item["owner_id"] == kb["owner_id"]
+
+    detail = await client.get(f"/api/knowledge_bases/{kb['id']}", headers=admin)
+    assert detail.status_code == 200
+
+    patch = await client.patch(
+        f"/api/knowledge_bases/{kb['id']}",
+        headers=admin,
+        json={"description": "管理员维护"},
+    )
+    assert patch.status_code == 200
+    assert patch.json()["description"] == "管理员维护"
+
+    admin_upload = await upload_markdown(client, admin, kb["id"], "管理员补充.md")
+    assert admin_upload.status_code == 202, admin_upload.text
+    assert (
+        await client.delete(
+            f"/api/documents/{admin_upload.json()['id']}", headers=admin
+        )
+    ).status_code == 204
+
+    # 原创建者已被降为普通用户：列表不可见，管理接口 403
+    alice_listing = await client.get("/api/knowledge_bases", headers=alice)
+    assert all(item["id"] != kb["id"] for item in alice_listing.json())
+    assert (
+        await client.get(f"/api/knowledge_bases/{kb['id']}", headers=alice)
+    ).status_code == 403
+    assert (
+        await client.get(f"/api/documents/{document_id}", headers=alice)
+    ).status_code == 403
+
+    assert (
+        await client.delete(f"/api/knowledge_bases/{kb['id']}", headers=admin)
+    ).status_code == 204
+    assert fake_store.deleted_kbs == [kb["id"]]
+
+
+async def test_admin_rename_checks_against_kb_owner(
+    client, fake_redis, db_maker, use_test_db, fake_store
+) -> None:
+    """管理员改别人的库名时，重名只按库的创建者判断，不受管理员自己的库影响。"""
+    alice = await auth_headers(client, fake_redis, "alice")
+    alice_kb = await create_kb(client, alice, "售后政策库")
+
+    admin = await auth_headers(client, fake_redis, "root")
+    await promote_admin(db_maker, "root")
+    await create_kb(client, admin, "管理员自己的库")
+
+    resp = await client.patch(
+        f"/api/knowledge_bases/{alice_kb['id']}",
+        headers=admin,
+        json={"name": "管理员自己的库"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "管理员自己的库"
+
+    second = await create_kb(client, alice, "第二库")
+    conflict = await client.patch(
+        f"/api/knowledge_bases/{second['id']}",
+        headers=admin,
+        json={"name": "管理员自己的库"},
+    )
+    assert conflict.status_code == 409
 
 
 async def test_uploaded_file_is_removed_with_kb(
@@ -771,10 +874,13 @@ def mineru_ready(**kwargs) -> dict:
     }
 
 
-async def test_parser_options_expose_mineru_status(client, monkeypatch) -> None:
+async def test_parser_options_expose_mineru_status(
+    client, fake_redis, monkeypatch
+) -> None:
     monkeypatch.setattr(knowledge_module, "mineru_status", mineru_ready)
+    headers = await auth_headers(client, fake_redis)
 
-    resp = await client.get("/api/parsers/options")
+    resp = await client.get("/api/parsers/options", headers=headers)
 
     assert resp.status_code == 200
     payload = resp.json()
@@ -783,7 +889,9 @@ async def test_parser_options_expose_mineru_status(client, monkeypatch) -> None:
     assert payload["mineru"]["image"] == "asktofit-mineru:cpu"
 
 
-async def test_parser_options_report_unavailable_reason(client, monkeypatch) -> None:
+async def test_parser_options_report_unavailable_reason(
+    client, fake_redis, monkeypatch
+) -> None:
     monkeypatch.setattr(
         knowledge_module,
         "mineru_status",
@@ -793,12 +901,17 @@ async def test_parser_options_report_unavailable_reason(client, monkeypatch) -> 
             "reason": "Docker 未启动",
         },
     )
+    headers = await auth_headers(client, fake_redis)
 
-    resp = await client.get("/api/parsers/options")
+    resp = await client.get("/api/parsers/options", headers=headers)
 
     assert resp.status_code == 200
     assert resp.json()["mineru"]["available"] is False
     assert resp.json()["mineru"]["reason"] == "Docker 未启动"
+
+    normal = await auth_headers(client, fake_redis, "bob", admin=False)
+    denied = await client.get("/api/parsers/options", headers=normal)
+    assert denied.status_code == 403
 
 
 async def test_upload_with_mineru_records_parser(

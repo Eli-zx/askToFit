@@ -23,6 +23,8 @@ from app.services.admin import sync_admin_users
 from app.services.llm import llm_service
 from app.services.maintenance import cleanup_loop
 from app.services.metrics import inc, observe, render_prometheus
+from app.services.task_worker import task_worker
+from app.services.warmup import keep_warm_loop, warmup_models
 from config import Config
 
 setup_logging()
@@ -45,11 +47,21 @@ async def lifespan(app: FastAPI):
 
     stop_event = asyncio.Event()
     maintenance_task = asyncio.create_task(cleanup_loop(stop_event))
-    logger.info("服务启动完成")
+    preload_task = asyncio.create_task(warmup_models())
+    keep_warm_task = asyncio.create_task(keep_warm_loop(stop_event))
+    await task_worker.start()
+    logger.info(
+        "服务启动完成，本地模型开始后台预热 interval=%.0fs",
+        Config.model_warmup_interval_seconds,
+    )
     try:
         yield
     finally:
         stop_event.set()
+        for task in (preload_task, keep_warm_task):
+            if not task.done():
+                task.cancel()
+        await task_worker.stop()
         try:
             await asyncio.wait_for(maintenance_task, timeout=10)
         except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -68,11 +80,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=list(Config.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

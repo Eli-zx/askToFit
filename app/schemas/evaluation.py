@@ -23,6 +23,8 @@ class EvalRunOut(BaseModel):
     ragas_version: str | None = None
     sample_count: int
     answerable_count: int
+    # 样本数是否达到统计阈值；不足的运行只展示，不计入概览与趋势
+    is_meaningful: bool = True
     retrieval_metrics: dict[str, Any] | None = None
     generation_metrics: dict[str, Any] | None = None
     config_snapshot: dict[str, Any] | None = None
@@ -68,6 +70,9 @@ class EvalOverviewOut(BaseModel):
     latest: EvalRunOut | None = None
     previous: EvalRunOut | None = None
     total_runs: int = 0
+    meaningful_runs: int = 0
+    # 概览与趋势只统计样本数达到该值的运行
+    min_samples: int = 10
     delta: dict[str, Any] | None = None
 
 

@@ -16,12 +16,27 @@ user-menu.yml
 *.log
 
 .env
+.env.*
+!.env.example
+!.env.*.example
 /models/
 logs/
 uploads/
 data/tmp/
 reports/
 loadtest/
+
+# 本地截图、个人简历与内部演示材料，不进入公开仓库
+/screens/
+/docs/张旭-*
+/docs/演示逐字稿.md
+/docs/演示逐字稿.docx
+/任务描述.md
+
+# 无引用的大文件 / 测试文件，本地保留但不提交
+/data/samples/发票申请指南.pdf
+/data/_com_test.doc
+/data/_com_test.docx
 
 .idea/
 .vscode/

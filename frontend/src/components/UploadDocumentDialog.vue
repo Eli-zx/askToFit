@@ -312,9 +312,10 @@ async function submit() {
   align-items: center;
   padding: 10px 14px;
   margin-bottom: 14px;
-  background: linear-gradient(120deg, #f4f3ff, #f0fbf8);
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 11px;
+  border-left: 2px solid var(--atf-brand);
+  border-radius: 0;
   gap: 9px;
 }
 
@@ -330,15 +331,15 @@ async function submit() {
 
 .upload__drop :deep(.el-upload-dragger) {
   padding: 26px 20px;
-  background: #fbfbff;
-  border: 1.5px dashed rgba(91, 91, 214, 0.24);
-  border-radius: 14px;
+  background: var(--atf-surface);
+  border: 1px dashed var(--atf-line-strong);
+  border-radius: var(--atf-radius-sm);
   transition: all 0.2s ease;
 }
 
 .upload__drop :deep(.el-upload-dragger:hover) {
-  background: #f7f6ff;
-  border-color: rgba(91, 91, 214, 0.46);
+  background: var(--atf-surface-raised);
+  border-color: var(--atf-brand);
 }
 
 .upload__icon {
@@ -366,7 +367,7 @@ async function submit() {
   padding: 8px 12px;
   margin-top: 9px;
   background: var(--atf-brand-soft);
-  border-radius: 9px;
+  border-radius: var(--atf-radius-sm);
 }
 
 .upload__file-name {
@@ -438,16 +439,20 @@ async function submit() {
   position: relative;
   display: flex;
   padding: 10px 12px;
-  background: #fff;
+  background: var(--atf-surface-raised);
   border: 1px solid var(--atf-line);
-  border-radius: 10px;
+  border-radius: var(--atf-radius-sm);
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
+.upload__mode:hover {
+  border-color: var(--atf-line-strong);
+}
+
 .upload__mode.is-active {
-  background: #f8f7ff;
-  border-color: rgba(91, 91, 214, 0.4);
+  background: var(--atf-brand-soft);
+  border-color: var(--atf-brand);
 }
 
 .upload__mode input {
@@ -478,9 +483,9 @@ async function submit() {
   justify-content: space-between;
   padding: 10px 13px;
   margin-top: 14px;
-  background: #faf9ff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 10px;
+  border-radius: var(--atf-radius-sm);
   gap: 12px;
 }
 
@@ -503,11 +508,11 @@ async function submit() {
 }
 
 .upload__force-text small.is-warning {
-  color: #c2703d;
+  color: var(--atf-brand-deep);
 }
 
 .upload__parser {
-  background: #fffaf3;
+  background: var(--atf-surface);
 }
 
 .upload__pipeline {
@@ -515,11 +520,12 @@ async function submit() {
   align-items: center;
   padding: 11px 14px;
   margin-top: 16px;
-  color: #8b8eaa;
-  font-size: 9.5px;
-  background: #faf9ff;
-  border: 1px dashed var(--atf-line-strong);
-  border-radius: 10px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  background: var(--atf-surface);
+  border: 1px solid var(--atf-line);
+  border-radius: 1px;
   justify-content: space-between;
 }
 
@@ -527,7 +533,7 @@ async function submit() {
   flex: 1;
   height: 1px;
   margin: 0 8px;
-  background: linear-gradient(90deg, rgba(91, 91, 214, 0.2), rgba(45, 212, 191, 0.3));
+  background: var(--atf-line-strong);
 }
 
 .upload__progress {

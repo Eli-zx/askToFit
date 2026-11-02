@@ -68,3 +68,18 @@ export function truncate(text, length = 80) {
   if (value.length <= length) return value
   return `${value.slice(0, length)}…`
 }
+
+/**
+ * 知识库封面标记：带年份与季节的名称取时装季代码（2026 春夏 -> SS26），
+ * 其余名称退回首字，避免每个知识库都用同一个色块字母。
+ */
+export function knowledgeMark(name) {
+  const value = String(name || '').trim()
+  const season = value.match(/(20\d{2})[^0-9]{0,6}(春|夏|秋|冬)/)
+  if (season) {
+    const prefix = ['春', '夏'].includes(season[2]) ? 'SS' : 'AW'
+    return `${prefix}${season[1].slice(2)}`
+  }
+  const plain = value.replace(/[（(].*?[）)]/g, '').trim()
+  return plain.slice(0, 1) || '档'
+}

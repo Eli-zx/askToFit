@@ -41,6 +41,17 @@ def _not_found(run_id: int) -> HTTPException:
     )
 
 
+def _threshold() -> int:
+    return evaluation_store.meaningful_sample_threshold()
+
+
+def _run_out(run: EvalRun, threshold: int | None = None) -> EvalRunOut:
+    out = EvalRunOut.model_validate(run)
+    limit = _threshold() if threshold is None else threshold
+    out.is_meaningful = int(run.sample_count or 0) >= limit
+    return out
+
+
 def _metric(
     run: EvalRun | None, level: str, metric: str
 ) -> float | None:
@@ -94,10 +105,13 @@ async def evaluation_overview(
     overview = await evaluation_store.get_overview(db)
     latest = overview["latest"]
     previous = overview["previous"]
+    threshold = overview["min_samples"]
     return EvalOverviewOut(
-        latest=EvalRunOut.model_validate(latest) if latest else None,
-        previous=EvalRunOut.model_validate(previous) if previous else None,
+        latest=_run_out(latest, threshold) if latest else None,
+        previous=_run_out(previous, threshold) if previous else None,
         total_runs=overview["total_runs"],
+        meaningful_runs=overview["meaningful_runs"],
+        min_samples=threshold,
         delta=_delta(latest, previous),
     )
 
@@ -145,9 +159,10 @@ async def evaluation_runs(
     total, rows = await evaluation_store.list_eval_runs(
         db, limit, offset, strategy=strategy or None, status=status_filter or None
     )
+    threshold = _threshold()
     return EvalRunListOut(
         total=total,
-        items=[EvalRunOut.model_validate(row) for row in rows],
+        items=[_run_out(row, threshold) for row in rows],
     )
 
 
@@ -161,7 +176,7 @@ async def evaluation_run_detail(
     run = await evaluation_store.get_eval_run(db, run_id)
     if run is None:
         raise _not_found(run_id)
-    return EvalRunOut.model_validate(run)
+    return _run_out(run)
 
 
 @router.get(

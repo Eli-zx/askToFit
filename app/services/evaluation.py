@@ -13,6 +13,35 @@ from typing import Any, Iterable
 RETRIEVAL_METRICS = ("hit_at_k", "recall_at_k", "mrr", "ndcg_at_k")
 LEVELS = ("doc", "section")
 
+# 不可回答样本的“正确拒答”判定：答案中出现任一表述即视为没有编造。
+REFUSAL_MARKERS = (
+    "未收录",
+    "没有收录",
+    "未找到",
+    "没有找到",
+    "未提及",
+    "没有提及",
+    "未说明",
+    "没有说明",
+    "没有介绍",
+    "无相关",
+    "没有相关",
+    "无法确认",
+    "无法确定",
+    "不能确定",
+    "无法判断",
+    "无法给出",
+    "无法回答",
+    "不能回答",
+    "抱歉",
+)
+
+
+def is_refusal(answer: str | None) -> bool:
+    """判断答案是否明确表示“资料不足/无法确认”，而不是编造答案。"""
+    text = str(answer or "")
+    return any(marker in text for marker in REFUSAL_MARKERS)
+
 
 def normalize_unit(text: str | None) -> str:
     """NFKC + 小写 + 去空白/标点，用于文档名与章节片段匹配。"""
@@ -248,6 +277,32 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _generation_summary(
+    records: list[dict[str, Any]],
+    *,
+    prefix: str,
+    valid_counts: dict[str, int],
+) -> dict[str, float | None]:
+    """生成指标均值；调用方负责只传入可回答（或只传不可回答）样本。"""
+    generation: dict[str, float | None] = {}
+    names = sorted(
+        {
+            name
+            for record in records
+            for name in (record.get("generation_metrics") or {})
+        }
+    )
+    for name in names:
+        values = [
+            float(record["generation_metrics"][name])
+            for record in records
+            if (record.get("generation_metrics") or {}).get(name) is not None
+        ]
+        generation[name] = _mean(values)
+        valid_counts[f"{prefix}.{name}"] = len(values)
+    return generation
+
+
 def _group_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     retrieval: dict[str, dict[str, float | None]] = {}
     valid_counts: dict[str, int] = {}
@@ -275,22 +330,30 @@ def _group_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     retrieval["keyword_coverage"] = _mean(keyword_values)
     valid_counts["retrieval.keyword_coverage"] = len(keyword_values)
 
-    generation: dict[str, float | None] = {}
-    generation_names = sorted(
-        {
-            name
-            for record in records
-            for name in (record.get("generation_metrics") or {})
-        }
+    generation = _generation_summary(
+        [record for record in records if record.get("answerable", True)],
+        prefix="generation",
+        valid_counts=valid_counts,
     )
-    for name in generation_names:
-        values = [
-            float(record["generation_metrics"][name])
-            for record in records
-            if (record.get("generation_metrics") or {}).get(name) is not None
-        ]
-        generation[name] = _mean(values)
-        valid_counts[f"generation.{name}"] = len(values)
+    unanswerable_records = [
+        record for record in records if not record.get("answerable", True)
+    ]
+    unanswerable_generation = _generation_summary(
+        unanswerable_records,
+        prefix="unanswerable.generation",
+        valid_counts=valid_counts,
+    )
+    refused = sum(
+        1 for record in unanswerable_records if is_refusal(record.get("answer"))
+    )
+    unanswerable = {
+        "count": len(unanswerable_records),
+        "refused": refused,
+        "refusal_accuracy": (
+            refused / len(unanswerable_records) if unanswerable_records else None
+        ),
+        "generation": unanswerable_generation,
+    }
 
     return {
         "sample_count": len(records),
@@ -299,6 +362,7 @@ def _group_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "retrieval": retrieval,
         "generation": generation,
+        "unanswerable": unanswerable,
         "valid_counts": valid_counts,
     }
 

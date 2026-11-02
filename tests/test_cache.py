@@ -1,13 +1,15 @@
-"""Redis 缓存键与失效策略测试。"""
+"""Redis 缓存键与版本化失效策略测试。"""
 
 from app.services.cache import (
-    PREFIX_ANSWER,
-    PREFIX_EMBEDDING,
+    GLOBAL_VERSION_KEY,
+    PREFIX_KB_VERSION,
     PREFIX_RETRIEVAL,
     answer_key,
+    bump_kb_version,
     embedding_key,
+    get_global_version,
     get_json,
-    invalidate_prefixes,
+    get_kb_versions,
     retrieval_key,
     retrieval_config_fingerprint,
     set_json,
@@ -92,14 +94,36 @@ async def test_get_and_set_json_roundtrip(fake_redis) -> None:
     assert await get_json(fake_redis, "asktofit:answer:missing", "answer") is None
 
 
-async def test_invalidate_prefixes_keeps_unrelated_caches(fake_redis) -> None:
+def test_retrieval_key_sensitive_to_kb_versions() -> None:
+    base = retrieval_key("问题", {"hybrid": [1]}, 5, 20, kb_versions={1: 1})
+    assert base == retrieval_key("问题", {"hybrid": [1]}, 5, 20, kb_versions={1: 1})
+    assert base != retrieval_key("问题", {"hybrid": [1]}, 5, 20, kb_versions={1: 2})
+    assert base != retrieval_key(
+        "问题", {"hybrid": [1]}, 5, 20, kb_versions={1: 1}, global_version=1
+    )
+
+
+async def test_get_kb_versions_defaults_to_zero(fake_redis) -> None:
+    assert await get_kb_versions(fake_redis, [1, 2]) == {1: 0, 2: 0}
+    assert await get_global_version(fake_redis) == 0
+
+
+async def test_bump_kb_version_only_invalidates_target_kb(fake_redis) -> None:
     await fake_redis.set(PREFIX_RETRIEVAL + "a", "1")
-    await fake_redis.set(PREFIX_ANSWER + "b", "2")
-    await fake_redis.set(PREFIX_EMBEDDING + "c", "3")
 
-    deleted = await invalidate_prefixes(fake_redis, (PREFIX_RETRIEVAL, PREFIX_ANSWER))
+    assert await bump_kb_version(fake_redis, 1) == 1
+    assert await bump_kb_version(fake_redis, 1) == 2
+    assert await bump_kb_version(fake_redis, 2) == 1
+    assert await get_kb_versions(fake_redis, [1, 2, 3]) == {1: 2, 2: 1, 3: 0}
 
-    assert deleted == 2
-    assert await fake_redis.get(PREFIX_RETRIEVAL + "a") is None
-    assert await fake_redis.get(PREFIX_ANSWER + "b") is None
-    assert await fake_redis.get(PREFIX_EMBEDDING + "c") == "3"
+    key = f"{PREFIX_KB_VERSION}1"
+    assert await fake_redis.ttl(key) > 0
+    # 版本化失效不再扫描/删除已有缓存键
+    assert await fake_redis.get(PREFIX_RETRIEVAL + "a") == "1"
+    assert await get_global_version(fake_redis) == 0
+
+
+async def test_bump_global_version_when_kb_id_missing(fake_redis) -> None:
+    assert await bump_kb_version(fake_redis, None) == 1
+    assert await get_global_version(fake_redis) == 1
+    assert await fake_redis.get(GLOBAL_VERSION_KEY) == "1"

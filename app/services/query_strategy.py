@@ -19,6 +19,7 @@ from app.core.logger import get_logger
 from app.services.cache import PREFIX_STRATEGY, get_json, set_json
 from app.services.llm import llm_service
 from app.services.metrics import inc, observe
+from app.services.priority import PRIORITY_NORMAL
 from app.services.query_prompts import (
     BACKTRACK_SYSTEM,
     BACKTRACK_USER,
@@ -64,14 +65,14 @@ _CONDITION_CUES = (
     "是否可以",
     "遇到",
 )
+# 只保留“方法/判断”类线索。“推荐 / 介绍”属于商品意图，
+# 具体商品问句（如“买件短袖有什么推荐”）直接检索即可，不应触发 HyDE。
 _ABSTRACT_CUES = (
     "为什么",
     "怎么选",
     "如何选择",
     "怎么判断",
     "适合",
-    "推荐",
-    "介绍",
 )
 
 _SELECTOR_ALIASES: dict[str, str] = {
@@ -146,7 +147,12 @@ def _cache_key(query: str, intent: str) -> str:
     return PREFIX_STRATEGY + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-async def _complete(model_name: str, messages: list[dict[str, str]], max_tokens: int) -> str:
+async def _complete(
+    model_name: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    priority: str = PRIORITY_NORMAL,
+) -> str:
     timeout = max(0.1, float(Config.strategy_timeout_seconds))
     return await asyncio.wait_for(
         llm_service.complete(
@@ -156,12 +162,17 @@ async def _complete(model_name: str, messages: list[dict[str, str]], max_tokens:
             top_p=0.9,
             max_tokens=max_tokens,
             timeout=timeout,
+            priority=priority,
         ),
         timeout=timeout,
     )
 
 
-async def select_strategy(query: str, model_name: str) -> str | None:
+async def select_strategy(
+    query: str,
+    model_name: str,
+    priority: str = PRIORITY_NORMAL,
+) -> str | None:
     """可选的 LLM 策略选择器；无法识别的输出按无效处理。"""
     try:
         raw = await _complete(
@@ -174,6 +185,7 @@ async def select_strategy(query: str, model_name: str) -> str | None:
                 },
             ],
             16,
+            priority,
         )
     except asyncio.CancelledError:
         raise
@@ -193,7 +205,11 @@ async def select_strategy(query: str, model_name: str) -> str | None:
     return selected
 
 
-async def generate_hyde(query: str, model_name: str) -> str | None:
+async def generate_hyde(
+    query: str,
+    model_name: str,
+    priority: str = PRIORITY_NORMAL,
+) -> str | None:
     try:
         raw = await _complete(
             model_name,
@@ -202,6 +218,7 @@ async def generate_hyde(query: str, model_name: str) -> str | None:
                 {"role": "user", "content": HYDE_USER.format(question=query)},
             ],
             180,
+            priority,
         )
     except asyncio.CancelledError:
         raise
@@ -220,7 +237,11 @@ async def generate_hyde(query: str, model_name: str) -> str | None:
     return text
 
 
-async def generate_subqueries(query: str, model_name: str) -> list[str]:
+async def generate_subqueries(
+    query: str,
+    model_name: str,
+    priority: str = PRIORITY_NORMAL,
+) -> list[str]:
     try:
         raw = await _complete(
             model_name,
@@ -234,6 +255,7 @@ async def generate_subqueries(query: str, model_name: str) -> list[str]:
                 {"role": "user", "content": SUBQUERY_USER.format(question=query)},
             ],
             220,
+            priority,
         )
     except asyncio.CancelledError:
         raise
@@ -265,7 +287,11 @@ async def generate_subqueries(query: str, model_name: str) -> list[str]:
     return result
 
 
-async def generate_backtrack(query: str, model_name: str) -> str | None:
+async def generate_backtrack(
+    query: str,
+    model_name: str,
+    priority: str = PRIORITY_NORMAL,
+) -> str | None:
     try:
         raw = await _complete(
             model_name,
@@ -274,6 +300,7 @@ async def generate_backtrack(query: str, model_name: str) -> str | None:
                 {"role": "user", "content": BACKTRACK_USER.format(question=query)},
             ],
             120,
+            priority,
         )
     except asyncio.CancelledError:
         raise
@@ -318,6 +345,7 @@ class QueryStrategyService:
         model_name: str,
         redis: Any | None = None,
         has_knowledge: bool = True,
+        priority: str = PRIORITY_NORMAL,
     ) -> StrategyPlan:
         started = time.perf_counter()
         text = (query or "").strip()
@@ -359,12 +387,12 @@ class QueryStrategyService:
             and len(text) >= 32
         ):
             selector_model = Config.strategy_selector_model or model_name
-            selected = await select_strategy(text, selector_model)
+            selected = await select_strategy(text, selector_model, priority)
             if selected and selected != STRATEGY_DIRECT:
                 strategy = selected
                 source = "llm"
 
-        plan = await self._build(text, strategy, source, model_name)
+        plan = await self._build(text, strategy, source, model_name, priority)
         await set_json(
             redis,
             cache_key,
@@ -380,10 +408,15 @@ class QueryStrategyService:
         return plan
 
     async def _build(
-        self, query: str, strategy: str, source: str, model_name: str
+        self,
+        query: str,
+        strategy: str,
+        source: str,
+        model_name: str,
+        priority: str = PRIORITY_NORMAL,
     ) -> StrategyPlan:
         if strategy == STRATEGY_SUBQUERY:
-            subqueries = await generate_subqueries(query, model_name)
+            subqueries = await generate_subqueries(query, model_name, priority)
             if not subqueries:
                 return _direct_plan(query, "fallback")
             return StrategyPlan(
@@ -393,7 +426,7 @@ class QueryStrategyService:
                 source=source,
             )
         if strategy == STRATEGY_BACKTRACK:
-            backtrack = await generate_backtrack(query, model_name)
+            backtrack = await generate_backtrack(query, model_name, priority)
             if not backtrack:
                 return _direct_plan(query, "fallback")
             return StrategyPlan(
@@ -403,7 +436,7 @@ class QueryStrategyService:
                 source=source,
             )
         if strategy == STRATEGY_HYDE:
-            hypothetical = await generate_hyde(query, model_name)
+            hypothetical = await generate_hyde(query, model_name, priority)
             if not hypothetical:
                 return _direct_plan(query, "fallback")
             return StrategyPlan(

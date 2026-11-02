@@ -58,6 +58,7 @@ describe('chat api', () => {
       status: 'open',
       intent: 'logistics',
       q: '包邮',
+      user_id: 7,
     })
 
     expect(http.get).toHaveBeenCalledWith('/chat/knowledge-gaps', {
@@ -67,6 +68,7 @@ describe('chat api', () => {
         status: 'open',
         intent: 'logistics',
         q: '包邮',
+        user_id: 7,
       },
     })
   })

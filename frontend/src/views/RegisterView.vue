@@ -165,9 +165,10 @@ async function submit() {
 
 .auth-form__head h2 {
   margin-top: 16px;
-  font-size: 30px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  font-family: var(--atf-font-display);
+  font-size: 31px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .auth-form__head p {
@@ -190,28 +191,27 @@ async function submit() {
 
 .auth-form :deep(.el-input__wrapper) {
   height: 44px;
-  padding: 0 14px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  box-shadow: none;
+  padding: 0 13px;
+  background: var(--atf-surface-raised);
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px var(--atf-line-strong) inset;
 }
 
 .auth-form :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(91, 91, 214, 0.52);
-  box-shadow: 0 0 0 4px rgba(91, 91, 214, 0.08);
+  box-shadow: 0 0 0 1px var(--atf-brand) inset;
 }
 
 .auth-form :deep(.el-input__prefix) {
-  color: #b0b2c7;
+  color: var(--atf-muted);
 }
 
 .auth-form__submit {
   width: 100%;
-  height: 48px;
+  height: 46px;
   margin-top: 4px;
-  font-size: 14px;
-  letter-spacing: 0.02em;
-  border-radius: 12px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  border-radius: 1px;
 }
 
 .auth-form__switch {

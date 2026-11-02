@@ -1,8 +1,8 @@
 /**
- * 新增功能端到端验收：会话归档 / 恢复、知识缺口运营台。
+ * 新增功能端到端验收：输入框知识库/温度、自动建会话、会话归档 / 恢复、知识缺口运营台。
  *
  * 使用独立临时账号与数据，直接注入 JWT 跳过验证码登录；
- * 运行前需启动后端与前端（E2E_BASE_URL 默认 http://127.0.0.1:4173）。
+ * 运行前需启动后端与前端（E2E_BASE_URL 默认 http://127.0.0.1:5173）。
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -14,7 +14,7 @@ import { chromium } from 'playwright-core'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FRONTEND_DIR = path.resolve(__dirname, '..')
 const PROJECT_DIR = path.resolve(FRONTEND_DIR, '..')
-const BASE_URL = process.env.E2E_BASE_URL || 'http://127.0.0.1:4173'
+const BASE_URL = process.env.E2E_BASE_URL || 'http://127.0.0.1:5173'
 
 const stamp = Date.now().toString(36)
 const username = `e2e_feat_${stamp}`
@@ -72,7 +72,8 @@ async def main():
         session.add(user)
         await session.flush()
         kb = KnowledgeBase(owner_id=user.id, name="E2E 功能验收库", description="临时", document_count=0)
-        session.add(kb)
+        alt_kb = KnowledgeBase(owner_id=user.id, name="E2E 辅助库", description="临时", document_count=0)
+        session.add_all([kb, alt_kb])
         await session.flush()
         conversation = Conversation(
             user_id=user.id,
@@ -206,6 +207,9 @@ async def main():
         await conn.execute(text("DELETE FROM eval_cases WHERE run_id IN (SELECT id FROM eval_runs WHERE owner_id = ${userId})"))
         await conn.execute(text("DELETE FROM eval_runs WHERE owner_id = ${userId}"))
         await conn.execute(text("DELETE FROM knowledge_gaps WHERE user_id = ${userId}"))
+        await conn.execute(text("DELETE FROM chat_messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ${userId})"))
+        await conn.execute(text("DELETE FROM conversations WHERE user_id = ${userId}"))
+        await conn.execute(text("DELETE FROM knowledge_bases WHERE owner_id = ${userId}"))
         await conn.execute(text("DELETE FROM users WHERE id = ${userId}"))
     await dispose_engine()
 
@@ -274,7 +278,88 @@ async function run() {
       .filter({ hasText: '取消归档' })
       .click()
     await page.locator('.sidebar__archive-toggle').waitFor({ state: 'hidden', timeout: 15000 })
+    // 归档唯一会话后页面会回到空白态，恢复后需重新选中会话才能修改配置
+    await page
+      .locator('.sidebar__item')
+      .filter({ hasText: '归档验收会话' })
+      .first()
+      .click()
+    await page.waitForURL(/\/chat\/\d+$/, { timeout: 15000 })
     console.log('[features] 会话恢复成功')
+
+    // ---------- 输入框：知识库选择与温度 ----------
+    const kbTool = page.locator('.composer__tool').filter({ hasText: '知识库' }).first()
+    await kbTool.click()
+    const kbPicker = page.locator('.kb-picker:visible')
+    await kbPicker.waitFor({ timeout: 15000 })
+    const altKbItem = kbPicker.locator('.kb-picker__item').filter({ hasText: 'E2E 辅助库' }).first()
+    const kbPatch = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PATCH' &&
+        /\/api\/chat\/conversations\/\d+$/.test(new URL(response.url()).pathname),
+      { timeout: 15000 },
+    )
+    await altKbItem.click()
+    await kbPatch
+    await page.waitForFunction(
+      () => document.querySelector('.composer__tool-value')?.textContent?.trim() === '2 个知识库',
+      { timeout: 15000 },
+    )
+    await kbTool.click()
+    await kbPicker.waitFor({ state: 'hidden', timeout: 15000 })
+    console.log('[features] 输入框知识库多选生效')
+
+    const tempTool = page.locator('.composer__tool').filter({ hasText: '温度' }).first()
+    await tempTool.click()
+    const tempPicker = page.locator('.temp-picker:visible')
+    await tempPicker.waitFor({ timeout: 15000 })
+    const tempPatch = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PATCH' &&
+        /\/api\/chat\/conversations\/\d+$/.test(new URL(response.url()).pathname),
+      { timeout: 15000 },
+    )
+    await tempPicker.locator('button').filter({ hasText: '发散' }).click()
+    await tempPatch
+    await page.waitForFunction(
+      () => document.querySelectorAll('.composer__tool-value')[1]?.textContent?.trim() === '0.7',
+      { timeout: 15000 },
+    )
+    await tempTool.click()
+    await tempPicker.waitFor({ state: 'hidden', timeout: 15000 })
+
+    // 刷新后配置应仍然保留（知识库已 PATCH 到会话，温度已落盘）
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.locator('.composer__tool').first().waitFor({ timeout: 30000 })
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.composer__tool-value')?.textContent?.trim() === '2 个知识库' &&
+        document.querySelectorAll('.composer__tool-value')[1]?.textContent?.trim() === '0.7',
+      { timeout: 30000 },
+    )
+    console.log('[features] 输入框知识库与温度配置已持久化')
+
+    // ---------- 不选会话直接提问：自动创建会话 ----------
+    await page.route('**/api/chat/conversations/*/messages/stream', (route) =>
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+        body: [
+          'event: meta\ndata: {"sources":[],"intent":"product","retrieval_strategy":"direct"}\n\n',
+          'event: delta\ndata: {"content":"这是自动建会话的测试回答。"}\n\n',
+          'event: done\ndata: {"latency_ms":1}\n\n',
+        ].join(''),
+      }),
+    )
+    await page.locator('.sidebar__new').click()
+    await page.waitForURL('**/chat')
+    const firstQuestion = '北京 5℃ 通勤，800 元预算选什么外套？'
+    await page.locator('.composer__input').fill(firstQuestion)
+    await page.locator('.composer__send').click()
+    await page.waitForURL(/\/chat\/\d+$/, { timeout: 30000 })
+    await page.getByText(firstQuestion).first().waitFor({ timeout: 15000 })
+    await page.getByText('这是自动建会话的测试回答。').first().waitFor({ timeout: 15000 })
+    console.log('[features] 未选会话提问时已自动创建会话')
 
     // ---------- 知识缺口运营台 ----------
     await page.locator('.shell__nav a[href="/knowledge-gaps"]').click()
@@ -294,17 +379,19 @@ async function run() {
     await card.getByText('已联系商品团队补充定制服务说明').waitFor({ timeout: 15000 })
     console.log('[features] 缺口列表、意图来源与备注保存正常')
 
+    const resolvedStat = page.locator('.gap-stat--mint strong')
+    const resolvedBefore = Number((await resolvedStat.innerText()).trim()) || 0
     await card.getByRole('button', { name: '标记已解决' }).click()
     await page.getByText('已标记为解决').waitFor({ timeout: 15000 })
     await card.waitFor({ state: 'hidden', timeout: 15000 })
-    const resolvedStat = page.locator('.gap-stat--mint strong')
+    // 统计卡跨用户汇总，历史数据可能已有已解决记录，因此断言增量而不是绝对值
     await page.waitForFunction(
-      () => document.querySelector('.gap-stat--mint strong')?.textContent?.trim() === '1',
+      (expected) =>
+        Number(document.querySelector('.gap-stat--mint strong')?.textContent?.trim()) ===
+        expected,
+      resolvedBefore + 1,
       { timeout: 15000 },
     )
-    if ((await resolvedStat.innerText()).trim() !== '1') {
-      throw new Error('解决后统计未更新')
-    }
     console.log('[features] 缺口状态更新与统计刷新正常')
 
     // ---------- 管理员评估看板 ----------
@@ -315,7 +402,12 @@ async function run() {
     await page.locator('.eval-stat').first().waitFor({ timeout: 30000 })
     const evalStatCount = await page.locator('.eval-stat').count()
     if (evalStatCount !== 4) throw new Error(`评估统计卡片数量异常：${evalStatCount}`)
-    await page.getByText('100.0%').first().waitFor({ timeout: 15000 })
+    // 概览只取样本数达标的运行（48 条），2 条样本的运行仍留在列表并标记“样本不足”
+    await page
+      .locator('.eval-stat')
+      .nth(2)
+      .getByText('48 条样本')
+      .waitFor({ timeout: 15000 })
     await page.locator('.eval-trend__group').first().waitFor({ timeout: 15000 })
 
     const runRow = page
@@ -323,6 +415,7 @@ async function run() {
       .filter({ hasText: 'qa_eval.jsonl' })
       .first()
     await runRow.waitFor({ timeout: 30000 })
+    await runRow.getByText('样本不足').waitFor({ timeout: 15000 })
     await runRow.getByRole('button', { name: '详情' }).click()
 
     const drawer = page.locator('.el-drawer:visible')

@@ -90,6 +90,33 @@ async def test_disabled_bert_uses_keyword_only(monkeypatch) -> None:
     assert result.source == "keyword"
 
 
+async def test_human_agent_rule_overrides_bert(monkeypatch) -> None:
+    async def fake_predict(text):
+        return _bert_result("greeting", 0.99, 0.9)
+
+    monkeypatch.setattr(intent_bert_classifier, "predict", fake_predict)
+    result = await classify_intent_detailed("转人工")
+
+    assert result.intent == "other"
+    assert result.source == "rule"
+
+
+async def test_human_agent_rule_overrides_cached_greeting(monkeypatch, fake_redis) -> None:
+    cached = IntentResult(
+        intent="greeting", confidence=0.97, margin=0.8, source="bert"
+    ).to_dict()
+    await fake_redis.set(_cache_key("人工客服"), json.dumps(cached))
+
+    async def should_not_run(text):
+        raise AssertionError("规则命中时不应调用 BERT")
+
+    monkeypatch.setattr(intent_bert_classifier, "predict", should_not_run)
+    result = await classify_intent_detailed("人工客服", redis=fake_redis)
+
+    assert result.intent == "other"
+    assert result.source == "rule"
+
+
 def test_intent_result_roundtrip() -> None:
     original = IntentResult(
         intent="payment",
@@ -102,3 +129,4 @@ def test_intent_result_roundtrip() -> None:
 
     assert restored == original
     assert IntentResult.from_dict({"intent": "unknown", "source": "x"}).intent == "other"
+    assert IntentResult.from_dict({"intent": "other", "source": "rule"}).source == "rule"

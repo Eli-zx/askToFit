@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { createConversation, updateConversation } from '@/api/chat'
+import { pickDefaultKnowledgeBase } from '@/utils/chat'
 import { EMBEDDING_MODES } from '@/utils/constants'
 import { toErrorMessage } from '@/utils/errors'
 
@@ -40,6 +41,13 @@ const limits = computed(() => ({
 }))
 
 const models = computed(() => props.options?.models || [])
+// 默认模型对客户只呈现为“默认模型”，具体服务商型号留在后台配置里
+const modelOptions = computed(() =>
+  models.value.map((model) => ({
+    ...model,
+    displayLabel: model.default ? '默认模型' : model.label,
+  })),
+)
 const defaults = computed(() => ({
   model_name: props.options?.defaults?.model_name || 'deepseekv4-flash',
   temperature: props.options?.defaults?.temperature ?? 0.3,
@@ -81,9 +89,10 @@ function initialize() {
       history_rounds: conversation.history_rounds,
     })
   } else {
+    const defaultKb = pickDefaultKnowledgeBase(props.knowledgeBases)
     Object.assign(form, {
       title: '',
-      kb_ids: props.knowledgeBases.length ? [props.knowledgeBases[0].id] : [],
+      kb_ids: defaultKb ? [defaultKb.id] : [],
       model_name: defaults.value.model_name,
       temperature: defaults.value.temperature,
       top_p: defaults.value.top_p,
@@ -195,17 +204,17 @@ async function submit() {
           </p>
         </el-form-item>
 
-        <el-form-item label="大模型">
+        <el-form-item label="回答模型">
           <el-select v-model="form.model_name" style="width: 100%">
             <el-option
-              v-for="model in models"
+              v-for="model in modelOptions"
               :key="model.name"
-              :label="model.label"
+              :label="model.displayLabel"
               :value="model.name"
               :disabled="!model.available"
             >
               <div class="settings__model-option">
-                <span>{{ model.label }}</span>
+                <span>{{ model.displayLabel }}</span>
                 <el-tag v-if="!model.available" size="small" type="info">未配置 Key</el-tag>
                 <el-tag v-else-if="model.default" size="small" effect="plain">默认</el-tag>
                 <span v-else class="settings__provider">{{ model.provider }}</span>
@@ -216,13 +225,13 @@ async function submit() {
 
         <div class="settings__params">
           <div class="settings__param-head">
-            <span>推理参数</span>
+            <span>回答偏好</span>
             <small>影响回答的稳定性、发散程度与上下文长度</small>
           </div>
 
           <div class="settings__param">
             <div class="settings__param-label">
-              <span>温度 Temperature</span>
+              <span>回答温度</span>
               <b>{{ form.temperature.toFixed(1) }}</b>
             </div>
             <el-slider
@@ -236,7 +245,7 @@ async function submit() {
 
           <div class="settings__param">
             <div class="settings__param-label">
-              <span>Top P</span>
+              <span>候选范围</span>
               <b>{{ form.top_p.toFixed(2) }}</b>
             </div>
             <el-slider
@@ -250,7 +259,7 @@ async function submit() {
 
           <div class="settings__param">
             <div class="settings__param-label">
-              <span>最长输出 Token</span>
+              <span>回答长度</span>
               <b>{{ form.max_tokens }}</b>
             </div>
             <el-slider
@@ -263,7 +272,7 @@ async function submit() {
 
           <div class="settings__param">
             <div class="settings__param-label">
-              <span>历史对话轮数</span>
+              <span>记忆轮数</span>
               <b>{{ form.history_rounds }} 轮</b>
             </div>
             <el-slider
@@ -289,11 +298,11 @@ async function submit() {
 
 <style scoped>
 .settings__pending {
-  padding: 12px 15px;
+  padding: 11px 14px;
   margin-bottom: 18px;
-  background: linear-gradient(120deg, #f0efff, #effaf8);
-  border: 1px solid rgba(91, 91, 214, 0.1);
-  border-radius: 12px;
+  background: var(--atf-brand-soft);
+  border-left: 2px solid var(--atf-brand);
+  border-radius: 0;
 }
 
 .settings__pending span {
@@ -340,9 +349,9 @@ async function submit() {
 .settings__params {
   padding: 16px 18px 6px;
   margin-top: 6px;
-  background: #faf9ff;
+  background: var(--atf-surface);
   border: 1px solid var(--atf-line);
-  border-radius: 16px;
+  border-radius: var(--atf-radius-md);
 }
 
 .settings__param-head {
@@ -376,9 +385,18 @@ async function submit() {
 }
 
 .settings__param-label b {
-  color: var(--atf-brand-deep);
+  color: var(--atf-ink);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 滑杆用铜色，和强调色区分开：它是调节工具，不是警示 */
+.settings__params :deep(.el-slider__bar) {
+  background: var(--atf-bronze);
+}
+
+.settings__params :deep(.el-slider__button) {
+  border-color: var(--atf-bronze);
 }
 
 .settings__param p {

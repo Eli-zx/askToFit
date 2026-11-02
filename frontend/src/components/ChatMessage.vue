@@ -19,14 +19,10 @@ const html = computed(() => renderMarkdown(props.message.content))
 const sources = computed(() => props.message.sources || [])
 const intent = computed(() => INTENT_META[props.message.intent] || null)
 const INTENT_SOURCE_LABEL = { bert: 'BERT', keyword: '关键词', default: '默认' }
-const intentDetail = computed(() => {
-  const source = INTENT_SOURCE_LABEL[props.message.intent_source]
-  if (!source) return ''
-  const confidence = Number(props.message.intent_confidence)
-  return Number.isFinite(confidence) && confidence > 0
-    ? `${source} ${Math.round(confidence * 100)}%`
-    : source
-})
+// 只展示判定来源，不暴露分类概率；概率仍保留在接口与运营数据中。
+const intentDetail = computed(
+  () => INTENT_SOURCE_LABEL[props.message.intent_source] || '',
+)
 const showNoSource = computed(
   () =>
     !props.streaming &&
@@ -35,6 +31,12 @@ const showNoSource = computed(
     props.message.intent !== 'greeting' &&
     !sources.value.length,
 )
+const sourceSummary = computed(() => {
+  const titles = [...new Set(sources.value.map((item) => item.title).filter(Boolean))]
+  if (!titles.length) return ''
+  const head = titles.slice(0, 2).join(' · ')
+  return titles.length > 2 ? `${head} 等 ${titles.length} 篇` : head
+})
 const rewrite = computed(() => {
   const rewritten = props.message.rewritten_query
   if (!rewritten || !props.question || rewritten === props.question) return ''
@@ -67,15 +69,7 @@ async function copyContent() {
   </article>
 
   <article v-else class="msg msg--assistant">
-    <div class="msg__bot-avatar">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path
-          d="M12 4c.8 3 2.3 4.5 5.3 5.3-3 .8-4.5 2.3-5.3 5.3-.8-3-2.3-4.5-5.3-5.3 3-.8 4.5-2.3 5.3-5.3Z"
-          fill="currentColor"
-        />
-        <circle cx="17.8" cy="5.6" r="1.3" fill="currentColor" opacity=".6" />
-      </svg>
-    </div>
+    <div class="msg__bot-avatar" aria-hidden="true">A</div>
 
     <div class="msg__body">
       <div class="msg__meta">
@@ -136,12 +130,19 @@ async function copyContent() {
           :class="{ 'is-open': showSources }"
           @click="showSources = !showSources"
         >
-          <el-icon><Document /></el-icon>
-          引用 {{ sources.length }} 条知识库资料
-          <el-icon class="msg__sources-arrow">
-            <ArrowDown v-if="!showSources" />
-            <ArrowUp v-else />
-          </el-icon>
+          <span class="msg__sources-label">
+            <el-icon><Document /></el-icon>
+            <span class="msg__sources-text">
+              出处<template v-if="sourceSummary"> · {{ sourceSummary }}</template>
+            </span>
+          </span>
+          <span class="msg__sources-count">
+            {{ String(sources.length).padStart(2, '0') }}
+            <el-icon class="msg__sources-arrow">
+              <ArrowDown v-if="!showSources" />
+              <ArrowUp v-else />
+            </el-icon>
+          </span>
         </button>
 
         <Transition name="source-expand">
@@ -187,155 +188,152 @@ async function copyContent() {
 
 .msg--assistant {
   align-items: flex-start;
-  gap: 12px;
+  gap: 13px;
 }
 
 .msg__user-avatar,
 .msg__bot-avatar {
   display: grid;
   flex: none;
-  color: #fff;
-  border-radius: 12px;
+  border-radius: 1px;
   place-items: center;
 }
 
 .msg__user-avatar {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   margin-top: 2px;
+  color: var(--atf-bg);
+  font-family: var(--atf-font-display);
   font-size: 12px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #39395f, #65658f);
+  font-weight: 600;
+  background: var(--atf-ink);
 }
 
 .msg__bot-avatar {
-  width: 34px;
-  height: 34px;
-  background: linear-gradient(135deg, #5b5bd6, #8b7cf6 60%, #2dd4bf 140%);
-  box-shadow: 0 6px 14px rgba(91, 91, 214, 0.22);
-}
-
-.msg__bot-avatar svg {
-  width: 76%;
-  height: 76%;
+  width: 30px;
+  height: 30px;
+  color: var(--atf-on-brand);
+  font-family: var(--atf-font-display);
+  font-size: 14px;
+  font-weight: 500;
+  background: var(--atf-brand);
 }
 
 .msg__user-bubble {
-  max-width: min(640px, 76%);
-  padding: 12px 17px;
-  color: #fff;
-  font-size: 14px;
-  line-height: 1.7;
+  max-width: min(620px, 76%);
+  padding: 12px 16px;
+  color: var(--atf-ink);
+  font-size: 13.5px;
+  line-height: 1.75;
   white-space: pre-wrap;
   word-break: break-word;
-  background: linear-gradient(135deg, #5b5bd6, #7770e8);
-  border-radius: 18px 18px 5px 18px;
-  box-shadow: 0 8px 22px rgba(91, 91, 214, 0.2);
+  background: var(--atf-brand-soft);
+  border-radius: 2px 2px 0 2px;
 }
 
 .msg__body {
   flex: 1;
   min-width: 0;
-  max-width: min(820px, 88%);
+  max-width: min(720px, 88%);
 }
 
 .msg__meta {
   display: flex;
   align-items: center;
-  height: 24px;
-  margin-bottom: 5px;
-  gap: 9px;
+  min-height: 24px;
+  margin-bottom: 10px;
+  gap: 10px;
 }
 
 .msg__author {
-  color: var(--atf-ink-soft);
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--atf-ink);
+  font-family: var(--atf-font-display);
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .msg__intent {
-  padding: 2px 8px;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  border-radius: 999px;
+  padding: 0 0 1px;
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px dotted currentColor;
+  border-radius: 0;
 }
 
 .tone-violet {
-  color: #5b4bc4;
-  background: #eeebff;
+  color: var(--atf-violet);
 }
 
 .tone-blue {
-  color: #2563a8;
-  background: #e8f2ff;
+  color: var(--atf-tone-blue);
 }
 
 .tone-mint {
-  color: #137d6d;
-  background: #e3faf5;
+  color: var(--atf-mint);
 }
 
 .tone-orange {
-  color: #a86118;
-  background: #fff3e4;
+  color: var(--atf-tone-gold);
 }
 
 .tone-red {
-  color: #b03a47;
-  background: #ffecef;
+  color: var(--atf-brand);
 }
 
 .tone-pink {
-  color: #a63c72;
-  background: #ffeaf4;
+  color: var(--atf-tone-pink);
 }
 
 .tone-gold {
-  color: #916612;
-  background: #fdf5dd;
+  color: var(--atf-tone-gold);
 }
 
 .tone-teal {
-  color: #16697a;
-  background: #e5f8fb;
+  color: var(--atf-tone-teal);
 }
 
 .tone-gray {
-  color: #61657d;
-  background: #f1f2f7;
+  color: var(--atf-muted);
 }
 
 .msg__intent-detail {
-  color: #a0a3b8;
-  font-size: 9px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
   font-variant-numeric: tabular-nums;
   cursor: help;
 }
 
 .msg__latency {
-  color: #aeb1c5;
-  font-size: 10px;
+  margin-left: auto;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
   font-variant-numeric: tabular-nums;
 }
 
+/* 助手回答不做卡片：一条细线起头，像编辑栏里的正文 */
 .msg__bubble {
-  padding: 15px 18px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  border-radius: 5px 18px 18px 18px;
-  box-shadow: 0 4px 18px rgba(43, 38, 95, 0.045);
+  padding: 18px 0 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--atf-line);
+  border-radius: 0;
 }
 
 .msg__bubble.is-error {
-  border-color: rgba(220, 76, 95, 0.22);
+  border-top-color: var(--atf-brand-line);
 }
 
 .msg__typing {
   display: flex;
   align-items: center;
   color: var(--atf-muted);
-  font-size: 12.5px;
+  font-size: 12px;
   gap: 9px;
 }
 
@@ -347,7 +345,7 @@ async function copyContent() {
 .msg__typing-dots i {
   width: 5px;
   height: 5px;
-  background: var(--atf-violet);
+  background: var(--atf-brand);
   border-radius: 50%;
   animation: typing-bounce 1.1s ease-in-out infinite;
 }
@@ -364,23 +362,22 @@ async function copyContent() {
   0%,
   60%,
   100% {
-    opacity: 0.35;
+    opacity: 0.3;
     transform: translateY(0);
   }
   30% {
     opacity: 1;
-    transform: translateY(-4px);
+    transform: translateY(-3px);
   }
 }
 
 .msg__cursor {
   display: inline-block;
-  width: 2px;
+  width: 1px;
   height: 15px;
-  margin-left: 2px;
+  margin-left: 3px;
   vertical-align: -2px;
   background: var(--atf-brand);
-  border-radius: 2px;
   animation: cursor-blink 0.9s steps(2, start) infinite;
 }
 
@@ -391,20 +388,20 @@ async function copyContent() {
 }
 
 .msg__error {
-  margin-top: 10px;
   padding-top: 10px;
-  color: #c24151;
+  margin-top: 10px;
+  color: var(--atf-brand-deep);
   font-size: 12px;
-  line-height: 1.6;
-  border-top: 1px dashed rgba(194, 65, 81, 0.24);
+  line-height: 1.65;
+  border-top: 1px solid var(--atf-brand-line-soft);
 }
 
 .msg__actions {
   display: flex;
   align-items: center;
   height: 28px;
-  margin-top: 6px;
-  gap: 6px;
+  margin-top: 7px;
+  gap: 14px;
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -416,19 +413,19 @@ async function copyContent() {
 .msg__action {
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
+  padding: 3px 0;
   color: var(--atf-muted);
-  font-size: 10.5px;
+  font-size: 10px;
   background: transparent;
   border: 0;
-  border-radius: 7px;
   cursor: pointer;
   gap: 4px;
 }
 
 .msg__action:hover {
   color: var(--atf-brand);
-  background: var(--atf-brand-soft);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .msg__action--static {
@@ -444,75 +441,106 @@ async function copyContent() {
   display: flex;
   align-items: flex-start;
   padding: 8px 11px;
-  margin-top: 8px;
-  color: #9a6a20;
+  margin-top: 9px;
+  color: var(--atf-tone-gold);
   font-size: 10.5px;
-  line-height: 1.6;
-  background: #fffaf0;
-  border: 1px solid rgba(202, 138, 4, 0.14);
-  border-radius: 9px;
+  line-height: 1.65;
+  background: var(--atf-tone-peach-bg);
+  border-left: 2px solid var(--atf-peach);
+  border-radius: 0;
   gap: 6px;
 }
 
 .msg__sources {
-  margin-top: 9px;
+  margin-top: 10px;
 }
 
+/* 出处收成回答末尾的一行脚注：始终露出前两篇资料名，点击再展开全文 */
 .msg__sources-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  padding: 6px 11px;
-  color: var(--atf-brand-deep);
-  font-size: 10.5px;
-  font-weight: 650;
-  background: #f4f3ff;
-  border: 1px solid rgba(91, 91, 214, 0.1);
-  border-radius: 999px;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 1px 0;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--atf-line-strong);
+  border-radius: 0;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: color 0.16s ease;
+  gap: 12px;
+}
+
+.msg__sources-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.msg__sources-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg__sources-count {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--atf-brand);
+  letter-spacing: 0.1em;
   gap: 5px;
 }
 
 .msg__sources-toggle:hover,
 .msg__sources-toggle.is-open {
-  background: #ecebfe;
+  color: var(--atf-ink-soft);
+}
+
+.msg__sources-toggle:hover .msg__sources-count,
+.msg__sources-toggle.is-open .msg__sources-count {
+  color: var(--atf-brand-deep);
 }
 
 .msg__sources-arrow {
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .msg__source-list {
   display: flex;
   flex-direction: column;
-  margin-top: 8px;
-  gap: 7px;
+  margin-top: 10px;
+  border-top: 1px solid var(--atf-line-strong);
 }
 
 .msg__source {
-  padding: 11px 13px;
-  background: #fbfbff;
-  border: 1px solid var(--atf-line);
-  border-radius: 11px;
+  padding: 11px 1px;
+  background: transparent;
+  border-bottom: 1px solid var(--atf-line);
+  border-radius: 0;
 }
 
 .msg__source-head {
   display: flex;
-  align-items: center;
-  gap: 9px;
+  align-items: flex-start;
+  gap: 10px;
 }
 
 .msg__source-index {
-  display: grid;
   flex: none;
-  width: 22px;
-  height: 22px;
   color: var(--atf-brand);
-  font-size: 9px;
-  font-weight: 750;
-  background: var(--atf-brand-soft);
-  border-radius: 7px;
-  place-items: center;
+  font-family: var(--atf-font-display);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 .msg__source-title {
@@ -520,13 +548,14 @@ async function copyContent() {
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  gap: 1px;
+  gap: 2px;
 }
 
 .msg__source-title strong {
   overflow: hidden;
-  color: var(--atf-ink-soft);
+  color: var(--atf-ink);
   font-size: 11px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -538,9 +567,9 @@ async function copyContent() {
 
 .msg__source-score {
   flex: none;
-  color: #2f8f73;
-  font-size: 9.5px;
-  font-weight: 700;
+  color: var(--atf-bronze);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -548,11 +577,12 @@ async function copyContent() {
   display: -webkit-box;
   margin-top: 7px;
   overflow: hidden;
-  color: #6f7288;
+  color: var(--atf-muted);
   font-size: 10.5px;
-  line-height: 1.65;
+  line-height: 1.7;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  /* 后端给的已是相关摘录，放宽到 6 行避免把摘录尾部（常是答案）裁掉 */
+  -webkit-line-clamp: 6;
 }
 
 .source-expand-enter-active,

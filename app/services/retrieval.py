@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+import weakref
+from collections.abc import AsyncIterator
 from typing import Any, Sequence
 
 from sqlalchemy import select
@@ -19,11 +22,18 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.models.parent_chunk import ParentChunk
 from app.services.bm25 import bm25_service
-from app.services.cache import get_json, retrieval_key, set_json
+from app.services.cache import (
+    get_global_version,
+    get_json,
+    get_kb_versions,
+    retrieval_key,
+    set_json,
+)
 from app.services.dedup import content_hash, normalize_text, simhash, text_similarity
 from app.services.embedding import embedding_service
 from app.services.fusion import rrf_fuse
 from app.services.metrics import inc, observe
+from app.services.priority import PRIORITY_NORMAL
 from app.services.reranker import reranker_service
 from app.services.vector_store import vector_store
 from config import Config
@@ -205,6 +215,63 @@ def _filter_bm25_coverage(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _log_retrieval_timing(
+    query: str,
+    strategy: str,
+    started: float,
+    *,
+    embed_ms: float,
+    vector_ms: float,
+    bm25_ms: float,
+    rerank_ms: float = 0.0,
+) -> None:
+    """输出分阶段耗时，便于定位检索链路瓶颈（文件行号由日志格式自动带出）。"""
+    logger.info(
+        "检索耗时 query=%s strategy=%s embed=%.0fms vector=%.0fms "
+        "bm25=%.0fms rerank=%.0fms total=%.0fms",
+        query[:50],
+        strategy,
+        embed_ms,
+        vector_ms,
+        bm25_ms,
+        rerank_ms,
+        (time.perf_counter() - started) * 1000,
+    )
+
+
+class _LockEntry:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+# 同一 key 的并发缓存未命中只允许一个请求真正回源，其余等待后复用结果。
+# 按事件循环隔离，避免测试中多个 asyncio.run 复用已绑定旧循环的锁。
+_singleflight_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, _LockEntry]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@contextlib.asynccontextmanager
+async def _singleflight(key: str) -> AsyncIterator[None]:
+    loop = asyncio.get_running_loop()
+    locks = _singleflight_locks.setdefault(loop, {})
+    entry = locks.get(key)
+    if entry is None:
+        entry = _LockEntry()
+        locks[key] = entry
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users <= 0:
+            locks.pop(key, None)
+
+
 class RetrievalService:
     """按知识库的检索模式分组召回，再统一重排序。"""
 
@@ -219,6 +286,7 @@ class RetrievalService:
         strategy: str = "direct",
         queries: Sequence[str] | None = None,
         rerank_query: str | None = None,
+        priority: str = PRIORITY_NORMAL,
     ) -> list[dict[str, Any]]:
         """kb_modes 形如 {"hybrid": [1, 2], "dense": [3]}。
 
@@ -235,7 +303,17 @@ class RetrievalService:
         recall_limit = recall_k or Config.candidate_k
         query_texts = _normalize_queries(query, queries)
         bm25_mode = _effective_bm25_mode()
+        kb_ids = sorted(
+            {int(kb_id) for ids in kb_modes.values() for kb_id in ids}
+        )
 
+        # KB 版本号参与缓存键：任一 KB 内容变化只会让该 KB 的旧键自然过期，
+        # 不再需要 scan 全库删除所有用户的检索缓存。
+        if redis is not None and Config.cache_enabled:
+            kb_versions = await get_kb_versions(redis, kb_ids)
+            global_version = await get_global_version(redis)
+        else:
+            kb_versions, global_version = {}, 0
         cache_key = retrieval_key(
             query,
             kb_modes,
@@ -244,17 +322,68 @@ class RetrievalService:
             queries=query_texts,
             strategy=strategy_name,
             bm25_mode=bm25_mode,
+            kb_versions=kb_versions,
+            global_version=global_version,
         )
         cached = await get_json(redis, cache_key, "retrieval")
         if isinstance(cached, list):
             logger.info("检索命中缓存 query=%s hits=%d", query[:50], len(cached))
             return cached
 
-        kb_ids = sorted(
-            {int(kb_id) for ids in kb_modes.values() for kb_id in ids}
+        async def compute() -> list[dict[str, Any]]:
+            return await self._retrieve_uncached(
+                query=query,
+                kb_modes=kb_modes,
+                kb_ids=kb_ids,
+                query_texts=query_texts,
+                strategy_name=strategy_name,
+                final_limit=final_limit,
+                recall_limit=recall_limit,
+                bm25_mode=bm25_mode,
+                cache_key=cache_key,
+                redis=redis,
+                started=started,
+                rerank_query=rerank_query,
+                priority=priority,
+            )
+
+        # 同一查询并发未命中时只回源一次，其余请求等待后复用结果
+        use_singleflight = (
+            Config.retrieval_singleflight
+            and Config.cache_enabled
+            and redis is not None
         )
+        if not use_singleflight:
+            return await compute()
+        async with _singleflight(cache_key):
+            rechecked = await get_json(redis, cache_key, "retrieval")
+            if isinstance(rechecked, list):
+                logger.info(
+                    "检索命中单飞缓存 query=%s hits=%d", query[:50], len(rechecked)
+                )
+                return rechecked
+            return await compute()
+
+    async def _retrieve_uncached(
+        self,
+        *,
+        query: str,
+        kb_modes: dict[str, list[int]],
+        kb_ids: list[int],
+        query_texts: tuple[str, ...],
+        strategy_name: str,
+        final_limit: int,
+        recall_limit: int,
+        bm25_mode: str,
+        cache_key: str,
+        redis: Any | None,
+        started: float,
+        rerank_query: str | None,
+        priority: str = PRIORITY_NORMAL,
+    ) -> list[dict[str, Any]]:
         embedding_error = False
         embeddings: dict[str, tuple[Any, Any]] = {}
+        stage_mark = time.perf_counter()
         for text in query_texts:
             try:
                 embeddings[text] = await embedding_service.embed_query(
@@ -269,6 +398,8 @@ class RetrievalService:
                     text[:60],
                 )
 
+        embed_ms = (time.perf_counter() - stage_mark) * 1000
+        stage_mark = time.perf_counter()
         vector_calls: list[tuple[str, list[int], str]] = []
         for text in query_texts:
             if text not in embeddings:
@@ -312,6 +443,8 @@ class RetrievalService:
                     continue
                 vector_lists.append(list(result))
 
+        vector_ms = (time.perf_counter() - stage_mark) * 1000
+        stage_mark = time.perf_counter()
         bm25_hits: list[dict[str, Any]] = []
         bm25_error: BaseException | None = None
         if bm25_mode != "off" and kb_ids:
@@ -329,6 +462,7 @@ class RetrievalService:
                     kb_ids,
                 )
 
+        bm25_ms = (time.perf_counter() - stage_mark) * 1000
         if bm25_error is not None and not any(vector_lists) and not embedding_error:
             raise bm25_error
 
@@ -368,6 +502,14 @@ class RetrievalService:
                     _EMPTY_RESULT_CACHE_TTL,
                     "retrieval",
                 )
+            _log_retrieval_timing(
+                query,
+                strategy_name,
+                started,
+                embed_ms=embed_ms,
+                vector_ms=vector_ms,
+                bm25_ms=bm25_ms,
+            )
             observe(
                 "asktofit_retrieval_duration_seconds",
                 time.perf_counter() - started,
@@ -389,6 +531,14 @@ class RetrievalService:
                     _EMPTY_RESULT_CACHE_TTL,
                     "retrieval",
                 )
+            _log_retrieval_timing(
+                query,
+                strategy_name,
+                started,
+                embed_ms=embed_ms,
+                vector_ms=vector_ms,
+                bm25_ms=bm25_ms,
+            )
             observe(
                 "asktofit_retrieval_duration_seconds",
                 time.perf_counter() - started,
@@ -410,17 +560,32 @@ class RetrievalService:
             {"strategy": strategy_name},
             value=float(len(candidates)),
         )
+        rerank_mark = time.perf_counter()
         reranked = await reranker_service.rerank(
             rerank_query or query,
             candidates[: Config.rerank_candidate_k],
             final_limit,
+            priority,
+        )
+        rerank_ms = (time.perf_counter() - rerank_mark) * 1000
+        _log_retrieval_timing(
+            query,
+            strategy_name,
+            started,
+            embed_ms=embed_ms,
+            vector_ms=vector_ms,
+            bm25_ms=bm25_ms,
+            rerank_ms=rerank_ms,
         )
         results = dedupe_hits(reranked)
-        degraded = any(hit.get("rerank_failed") for hit in results)
+        degraded = any(
+            hit.get("rerank_failed") or hit.get("rerank_timeout") for hit in results
+        )
         if degraded:
+            failed = any(hit.get("rerank_failed") for hit in results)
             logger.warning(
-                "本轮重排序失败，按配置 rerank_failure_mode=%s 交给上层处理",
-                Config.rerank_failure_mode,
+                "本轮重排序降级 failed=%s，按失败模式或向量顺序交给上层处理",
+                failed,
             )
         ttl = (
             Config.retrieval_degraded_cache_ttl

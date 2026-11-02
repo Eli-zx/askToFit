@@ -1,15 +1,14 @@
 <script setup>
 import BrandMark from '@/components/BrandMark.vue'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 </script>
 
 <template>
   <div class="auth">
-    <div class="auth__aurora" />
-
     <aside class="auth__story">
       <div class="auth__story-top">
         <BrandMark light :size="40" />
-        <span class="auth__badge">Retrieval-Augmented Commerce</span>
+        <span class="auth__badge">Private Client Advisory</span>
       </div>
 
       <div class="auth__story-copy">
@@ -35,7 +34,7 @@ import BrandMark from '@/components/BrandMark.vue'
         </div>
         <div class="auth__mock-pill">
           <i />
-          检索增强生成 · 实时引用
+          回答之前，先查资料
         </div>
       </div>
 
@@ -45,17 +44,20 @@ import BrandMark from '@/components/BrandMark.vue'
           <span>业务知识域</span>
         </div>
         <div>
-          <strong>SSE</strong>
-          <span>流式回答</span>
+          <strong>24H</strong>
+          <span>在线应答</span>
         </div>
         <div>
-          <strong>Hybrid</strong>
-          <span>混合检索</span>
+          <strong>逐条</strong>
+          <span>引用可溯</span>
         </div>
       </footer>
     </aside>
 
     <section class="auth__panel">
+      <div class="auth__theme">
+        <ThemeToggle show-label />
+      </div>
       <div class="auth__mobile-brand">
         <BrandMark :size="34" />
       </div>
@@ -73,56 +75,28 @@ import BrandMark from '@/components/BrandMark.vue'
   grid-template-columns: minmax(420px, 1.05fr) minmax(420px, 0.95fr);
   min-height: 100vh;
   overflow: hidden;
-  background: #fbfaff;
+  background: var(--atf-bg);
 }
 
-.auth__aurora {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 82% 12%, rgba(139, 124, 246, 0.14), transparent 34%),
-    radial-gradient(circle at 58% 88%, rgba(45, 212, 191, 0.12), transparent 32%);
-}
-
+/* 左栏做成杂志封面：墨色底、衬线大标题、细线分隔 */
 .auth__story {
   position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
-  padding: 44px 56px 40px;
+  padding: 46px 56px 40px;
   overflow: hidden;
-  color: #fff;
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.06), transparent 40%),
-    linear-gradient(145deg, #24245c 0%, #3a3487 44%, #4d43ad 76%, #356f8a 130%);
-}
-
-.auth__story::before,
-.auth__story::after {
-  position: absolute;
-  content: '';
-  border-radius: 50%;
-  filter: blur(8px);
+  color: var(--atf-story-ink);
+  background: var(--atf-story-bg);
 }
 
 .auth__story::before {
-  top: -140px;
-  right: -120px;
-  width: 380px;
-  height: 380px;
-  background: radial-gradient(circle, rgba(139, 124, 246, 0.55), transparent 68%);
-  animation: atf-float 16s ease-in-out infinite;
-}
-
-.auth__story::after {
-  bottom: -170px;
-  left: -110px;
-  width: 420px;
-  height: 420px;
-  background: radial-gradient(circle, rgba(45, 212, 191, 0.34), transparent 68%);
-  animation: atf-float 20s ease-in-out infinite reverse;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  content: '';
+  background: var(--atf-story-line);
 }
 
 .auth__story-top {
@@ -131,19 +105,20 @@ import BrandMark from '@/components/BrandMark.vue'
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--atf-story-line);
   gap: 16px;
 }
 
 .auth__badge {
-  padding: 7px 12px;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 9.5px;
-  font-weight: 650;
+  padding: 5px 8px;
+  color: var(--atf-story-soft);
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
+  border: 1px solid var(--atf-story-line);
+  border-radius: 1px;
 }
 
 .auth__story-copy {
@@ -153,22 +128,23 @@ import BrandMark from '@/components/BrandMark.vue'
 }
 
 .auth__story-copy h1 {
-  font-size: clamp(32px, 3.2vw, 47px);
-  font-weight: 800;
-  letter-spacing: -0.035em;
-  line-height: 1.22;
+  font-family: var(--atf-font-display);
+  font-size: clamp(33px, 3.4vw, 50px);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.24;
 }
 
 .auth__story-copy h1 span {
-  color: #b9f6e9;
+  color: var(--atf-story-accent);
 }
 
 .auth__story-copy p {
   max-width: 430px;
-  margin-top: 22px;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 14px;
-  line-height: 1.9;
+  margin-top: 24px;
+  color: var(--atf-story-soft);
+  font-size: 13.5px;
+  line-height: 1.95;
 }
 
 .auth__mock {
@@ -176,74 +152,71 @@ import BrandMark from '@/components/BrandMark.vue'
   z-index: 1;
   display: flex;
   flex-direction: column;
-  max-width: 430px;
+  max-width: 440px;
   margin-top: 44px;
-  gap: 12px;
+  gap: 11px;
 }
 
 .auth__mock-card {
-  padding: 15px 18px;
+  padding: 14px 17px;
   font-size: 12.5px;
-  line-height: 1.7;
-  border-radius: 16px;
+  line-height: 1.75;
+  border-radius: 1px;
   animation: atf-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .auth__mock-card--user {
   align-self: flex-end;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-bottom-right-radius: 5px;
-  backdrop-filter: blur(10px);
+  color: var(--atf-story-ink);
+  background: var(--atf-story-card);
+  border: 1px solid var(--atf-story-card-line);
   animation-delay: 0.12s;
 }
 
 .auth__mock-card--bot {
   align-self: flex-start;
   max-width: 92%;
-  color: rgba(29, 30, 51, 0.86);
-  background: rgba(255, 255, 255, 0.94);
-  border-bottom-left-radius: 5px;
+  color: var(--atf-story-bubble-ink);
+  background: var(--atf-story-bubble-bg);
   animation-delay: 0.28s;
 }
 
 .auth__mock-card--bot small {
   display: block;
-  margin-top: 7px;
-  color: #7a7fa4;
-  font-size: 10.5px;
+  margin-top: 8px;
+  padding-top: 7px;
+  color: var(--atf-muted);
+  font-size: 10px;
+  border-top: 1px solid var(--atf-story-bubble-line);
 }
 
 .auth__mock-dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   margin-right: 6px;
-  background: #2dd4bf;
+  background: var(--atf-brand);
   border-radius: 50%;
-  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.16);
 }
 
 .auth__mock-pill {
   display: inline-flex;
   align-items: center;
   align-self: flex-start;
-  padding: 7px 13px;
+  padding: 5px 0;
   margin-top: 4px;
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  background: rgba(10, 12, 34, 0.22);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 999px;
+  color: var(--atf-story-soft);
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   gap: 8px;
 }
 
 .auth__mock-pill i {
   width: 5px;
   height: 5px;
-  background: #8fe8d9;
+  background: var(--atf-story-dot);
   border-radius: 50%;
   animation: atf-pulse 2s ease-in-out infinite;
 }
@@ -253,36 +226,45 @@ import BrandMark from '@/components/BrandMark.vue'
   z-index: 1;
   display: flex;
   margin-top: auto;
-  padding-top: 36px;
+  padding-top: 30px;
+  border-top: 1px solid var(--atf-story-line);
   gap: clamp(26px, 4vw, 54px);
 }
 
 .auth__story-footer div {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .auth__story-footer strong {
-  font-size: 17px;
-  font-weight: 750;
-  letter-spacing: -0.02em;
+  font-family: var(--atf-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .auth__story-footer span {
-  color: rgba(255, 255, 255, 0.46);
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
+  color: var(--atf-story-faint);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .auth__panel {
   position: relative;
-  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 48px 40px 28px;
+  background: var(--atf-surface);
+}
+
+.auth__theme {
+  position: absolute;
+  top: 20px;
+  right: 26px;
 }
 
 .auth__form-wrap {
@@ -298,9 +280,10 @@ import BrandMark from '@/components/BrandMark.vue'
 
 .auth__legal {
   margin-top: 40px;
-  color: #a3a6bd;
-  font-size: 10.5px;
-  letter-spacing: 0.03em;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
 }
 
 @media (max-width: 980px) {

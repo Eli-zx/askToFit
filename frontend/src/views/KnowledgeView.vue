@@ -18,7 +18,7 @@ import { deleteKnowledgeBase, listKnowledgeBases } from '@/api/knowledge'
 import KnowledgeBaseDialog from '@/components/KnowledgeBaseDialog.vue'
 import { useAuthStore } from '@/stores/auth'
 import { toErrorMessage } from '@/utils/errors'
-import { formatDateTime, truncate } from '@/utils/format'
+import { formatDateTime, knowledgeMark, truncate } from '@/utils/format'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -54,7 +54,8 @@ async function loadKnowledgeBases() {
 }
 
 function canManage(kb) {
-  return Number(kb.owner_id) === Number(auth.user?.id)
+  // 管理员可管理全部知识库，其余用户只能管理自己创建的
+  return Boolean(auth.user?.is_admin) || Number(kb.owner_id) === Number(auth.user?.id)
 }
 
 function openCreate() {
@@ -187,7 +188,12 @@ onMounted(loadKnowledgeBases)
           @click="enterKnowledgeBase(kb)"
         >
           <div class="knowledge-card__top">
-            <span class="knowledge-card__icon">{{ kb.name.slice(0, 1) }}</span>
+            <span
+              class="knowledge-card__icon"
+              :class="{ 'is-code': knowledgeMark(kb.name).length > 1 }"
+            >
+              {{ knowledgeMark(kb.name) }}
+            </span>
             <span v-if="kb.is_public" class="knowledge-card__public">公共</span>
             <span class="knowledge-card__mode" :class="modeMeta(kb.embedding_mode).className">
               {{ modeMeta(kb.embedding_mode).label }}
@@ -271,94 +277,86 @@ onMounted(loadKnowledgeBases)
   gap: 10px;
 }
 
+/* 指标带：一条通栏细线，数字用衬线，分隔靠竖线而不是卡片 */
 .knowledge-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-top: 30px;
-  gap: 12px;
+  margin-top: 34px;
+  border-top: 1px solid var(--atf-line-strong);
+  border-bottom: 1px solid var(--atf-line-strong);
 }
 
 .stat-card {
-  display: flex;
-  align-items: center;
-  padding: 16px 18px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  border-radius: 16px;
-  gap: 13px;
+  display: block;
+  padding: 18px 26px 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.stat-card + .stat-card {
+  border-left: 1px solid var(--atf-line);
+}
+
+.stat-card:first-child {
+  padding-left: 0;
 }
 
 .stat-card__icon {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  font-size: 17px;
-  border-radius: 11px;
-  place-items: center;
-}
-
-.stat-card--violet .stat-card__icon {
-  color: #5b4bc4;
-  background: #eeebff;
-}
-
-.stat-card--mint .stat-card__icon {
-  color: #137d6d;
-  background: #e3faf5;
-}
-
-.stat-card--blue .stat-card__icon {
-  color: #2563a8;
-  background: #e8f2ff;
-}
-
-.stat-card--peach .stat-card__icon {
-  color: #b15a3c;
-  background: #fff0eb;
+  display: none;
 }
 
 .stat-card div {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 8px;
 }
 
 .stat-card strong {
-  font-size: 21px;
-  font-weight: 800;
+  font-family: var(--atf-font-display);
+  font-size: clamp(34px, 3.4vw, 46px);
+  font-weight: 500;
   letter-spacing: -0.02em;
-  line-height: 1.2;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-card span {
   color: var(--atf-muted);
-  font-size: 10px;
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
+/* 知识库列表改成通栏索引行，不用悬浮卡片 */
 .knowledge-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 24px;
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
+  margin-top: 20px;
+  gap: 0;
+  border-top: 1px solid var(--atf-line);
 }
 
 .knowledge-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 235px;
-  padding: 20px 21px 17px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  border-radius: 20px;
+  min-height: 0;
+  padding: 20px 2px 18px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--atf-line);
+  border-radius: 0;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: background 0.2s ease;
 }
 
 .knowledge-card:hover {
-  border-color: rgba(91, 91, 214, 0.2);
-  box-shadow: var(--atf-shadow-md);
-  transform: translateY(-4px);
+  background: var(--atf-wash);
+  box-shadow: none;
+  transform: none;
 }
 
 .knowledge-card--skeleton {
@@ -375,39 +373,49 @@ onMounted(loadKnowledgeBases)
   display: grid;
   width: 42px;
   height: 42px;
-  color: #fff;
+  color: var(--atf-bg);
+  font-family: var(--atf-font-display);
   font-size: 17px;
-  font-weight: 750;
-  background: linear-gradient(135deg, #5b5bd6, #8b7cf6 62%, #2dd4bf 140%);
-  border-radius: 13px;
-  box-shadow: 0 8px 18px rgba(91, 91, 214, 0.2);
+  font-weight: 600;
+  background: var(--atf-brand);
+  border-radius: 1px;
   place-items: center;
 }
 
+.knowledge-card__icon.is-code {
+  font-family: var(--atf-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+}
+
 .knowledge-card__public {
-  padding: 3px 9px;
-  color: #6846d8;
-  font-size: 9.5px;
-  font-weight: 700;
-  background: #efeaff;
-  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--atf-brand-deep);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  background: var(--atf-brand-soft);
+  border-radius: 1px;
 }
 
 .knowledge-card__mode {
-  padding: 3px 9px;
-  font-size: 9.5px;
-  font-weight: 700;
-  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--atf-line);
+  border-radius: 1px;
 }
 
 .mode-hybrid {
-  color: #137d6d;
-  background: #e3faf5;
+  color: var(--atf-mint);
+  border-color: var(--atf-tone-mint-line);
 }
 
 .mode-dense {
-  color: #2563a8;
-  background: #e8f2ff;
+  color: var(--atf-tone-blue);
+  border-color: var(--atf-tone-blue-line);
 }
 
 .knowledge-card__menu {
@@ -417,12 +425,12 @@ onMounted(loadKnowledgeBases)
 .knowledge-card__menu button {
   width: 30px;
   height: 30px;
-  color: #a6a9be;
+  color: var(--atf-muted);
   font-size: 15px;
   letter-spacing: 1px;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--atf-radius-sm);
   cursor: pointer;
 }
 
@@ -432,10 +440,11 @@ onMounted(loadKnowledgeBases)
 }
 
 .knowledge-card h3 {
-  margin-top: 16px;
+  margin-top: 12px;
   overflow: hidden;
-  font-size: 16px;
-  font-weight: 750;
+  font-family: var(--atf-font-display);
+  font-size: 24px;
+  font-weight: 600;
   letter-spacing: -0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -462,7 +471,7 @@ onMounted(loadKnowledgeBases)
 .knowledge-card__meta span {
   display: inline-flex;
   align-items: center;
-  color: #8b8eaa;
+  color: var(--atf-muted);
   font-size: 10.5px;
   gap: 4px;
 }
@@ -473,9 +482,10 @@ onMounted(loadKnowledgeBases)
   justify-content: space-between;
   padding-top: 12px;
   margin-top: auto;
-  color: #aeb1c5;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
-  border-top: 1px dashed var(--atf-line);
+  border-top: 1px solid var(--atf-line);
 }
 
 .knowledge-card__enter {
@@ -504,21 +514,21 @@ onMounted(loadKnowledgeBases)
 
 .knowledge-empty__orb {
   display: grid;
-  width: 64px;
-  height: 64px;
-  color: #fff;
-  font-size: 26px;
-  background: linear-gradient(135deg, #5b5bd6, #8b7cf6 60%, #2dd4bf 140%);
-  border-radius: 21px;
-  box-shadow: 0 16px 36px rgba(91, 91, 214, 0.22);
+  width: 62px;
+  height: 62px;
+  color: var(--atf-bg);
+  font-size: 25px;
+  background: var(--atf-ink);
+  border-radius: 2px;
   place-items: center;
 }
 
 .knowledge-empty h2 {
   margin-top: 19px;
-  font-size: 21px;
-  font-weight: 750;
-  letter-spacing: -0.02em;
+  font-family: var(--atf-font-display);
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .knowledge-empty p {
@@ -555,6 +565,23 @@ onMounted(loadKnowledgeBases)
 
   .knowledge-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stat-card {
+    padding: 16px 16px 14px;
+  }
+
+  .stat-card:nth-child(odd) {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .stat-card:nth-child(n + 3) {
+    border-top: 1px solid var(--atf-line);
+  }
+
+  .stat-card strong {
+    font-size: 34px;
   }
 
   .knowledge-grid {

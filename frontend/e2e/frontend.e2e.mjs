@@ -335,17 +335,20 @@ async function run() {
     // ---------- 创建会话 + SSE 流式问答 ----------
     await page.locator('.shell__nav a[href="/chat"]').click()
     await page.locator('.chat-welcome').waitFor({ timeout: 30000 })
-    await page
-      .getByPlaceholder('输入你的售前问题，例如：满 199 元包邮吗？')
-      .fill('星辰会员的积分怎么累计？')
-    await page
-      .getByPlaceholder('输入你的售前问题，例如：满 199 元包邮吗？')
-      .press('Enter')
+    const composerInput = page.locator('.composer__input')
+    await composerInput.fill('星辰会员的积分怎么累计？')
+    await composerInput.press('Enter')
 
+    // 当前版本发送首条消息会自动创建会话；仅在无可用知识库等情况下才会弹设置框
     const createDialog = page.locator('.el-dialog:visible')
-    await createDialog.waitFor({ timeout: 10000 })
-    await createDialog.getByText(kbName).first().waitFor({ timeout: 15000 })
-    await createDialog.getByRole('button', { name: '创建并开始' }).click()
+    const dialogShown = await createDialog
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+    if (dialogShown) {
+      await createDialog.getByText(kbName).first().waitFor({ timeout: 15000 })
+      await createDialog.getByRole('button', { name: '创建并开始' }).click()
+    }
 
     await page.locator('.msg--user').first().waitFor({ timeout: 30000 })
     const assistant = page.locator('.msg--assistant').first()

@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatMetric,
   formatPercent,
+  isMeaningfulRun,
   metricLabel,
   strategyLabel,
 } from '@/utils/evaluation'
@@ -47,8 +48,17 @@ describe('evaluation utils', () => {
     expect(RUN_STATUS_META.partial.type).toBe('warning')
     expect(metricLabel('faithfulness')).toBe('Faithfulness')
     expect(metricLabel('llm_context_precision_with_reference')).toBe('Context Precision')
+    expect(metricLabel('refusal_accuracy')).toBe('正确拒答率')
     expect(metricLabel('custom_metric')).toBe('custom_metric')
     expect(strategyLabel('backtrack')).toBe('回溯')
     expect(strategyLabel('unknown')).toBe('unknown')
+  })
+
+  it('flags low-sample runs without hiding them', () => {
+    expect(isMeaningfulRun({ sample_count: 60, is_meaningful: true })).toBe(true)
+    expect(isMeaningfulRun({ sample_count: 1, is_meaningful: false })).toBe(false)
+    // 老接口没有该字段时按有效运行处理
+    expect(isMeaningfulRun({ sample_count: 60 })).toBe(true)
+    expect(isMeaningfulRun(null)).toBe(false)
   })
 })

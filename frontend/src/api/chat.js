@@ -43,9 +43,9 @@ export function unarchiveConversation(conversationId) {
   return http.delete(`/chat/conversations/${conversationId}/archive`)
 }
 
-export function listKnowledgeGaps({ limit = 50, offset = 0, status, intent, q } = {}) {
+export function listKnowledgeGaps({ limit = 50, offset = 0, status, intent, q, user_id } = {}) {
   return http.get('/chat/knowledge-gaps', {
-    params: { limit, offset, status, intent, q },
+    params: { limit, offset, status, intent, q, user_id },
   })
 }
 

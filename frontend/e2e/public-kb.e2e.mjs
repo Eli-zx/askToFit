@@ -1,8 +1,8 @@
 /**
- * 公共知识库前端验收：demo 账号查看 eli 创建的公共库，并确认只读与对话可选。
+ * 公共知识库前端验收：普通账号查看公共库，并确认只读与对话可选。
  *
  * 运行：node e2e/public-kb.e2e.mjs
- * 前置：后端 8000、前端 5173 已启动，eli 的公共知识库已通过导入脚本创建。
+ * 前置：后端 8000、前端 5173 已启动，公共知识库已通过导入脚本创建。
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'

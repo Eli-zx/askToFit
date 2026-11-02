@@ -59,6 +59,8 @@ async def client(db_maker, fake_redis):
 
     fastapi_app.dependency_overrides[get_db] = override_get_db
     fastapi_app.dependency_overrides[get_redis] = override_get_redis
+    # 供测试辅助函数在注册后直接改 is_admin（管理接口需要管理员身份）
+    fastapi_app.state.test_db_maker = db_maker
 
     transport = httpx.ASGITransport(app=fastapi_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:

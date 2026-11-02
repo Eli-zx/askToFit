@@ -258,11 +258,13 @@ def _record(
     keyword: float | None = None,
     faithfulness: float | None = None,
     answerable: bool = True,
+    answer: str | None = None,
 ) -> dict:
     return {
         "intent": intent,
         "tags": tags,
         "answerable": answerable,
+        "answer": answer,
         "retrieval": {
             "doc": {"hit_at_k": hit, "recall_at_k": hit, "mrr": hit, "ndcg_at_k": hit},
             "section": {
@@ -290,10 +292,14 @@ def test_aggregate_means_ignore_unavailable_values() -> None:
     assert summary["answerable_count"] == 2
     assert summary["retrieval"]["doc"]["hit_at_k"] == 0.5
     assert summary["retrieval"]["keyword_coverage"] == 0.75
-    assert summary["generation"]["faithfulness"] == 0.7
+    # 生成指标只统计 answerable=true 的样本，不可回答样本单独报告
+    assert summary["generation"]["faithfulness"] == 0.9
     assert summary["valid_counts"]["retrieval.doc.hit_at_k"] == 2
     assert summary["valid_counts"]["retrieval.keyword_coverage"] == 2
-    assert summary["valid_counts"]["generation.faithfulness"] == 2
+    assert summary["valid_counts"]["generation.faithfulness"] == 1
+    assert summary["unanswerable"]["count"] == 1
+    assert summary["unanswerable"]["generation"]["faithfulness"] == 0.5
+    assert summary["valid_counts"]["unanswerable.generation.faithfulness"] == 1
 
     assert set(summary["by_intent"]) == {"logistics", "size"}
     assert summary["by_intent"]["logistics"]["retrieval"]["doc"]["hit_at_k"] == 0.5
@@ -311,6 +317,12 @@ def test_aggregate_handles_empty_and_missing_retrieval_block() -> None:
     partial = ev.aggregate([{"intent": "unknown", "tags": None}])
     assert partial["retrieval"]["section"]["mrr"] is None
     assert partial["generation"] == {}
+    assert partial["unanswerable"] == {
+        "count": 0,
+        "refused": 0,
+        "refusal_accuracy": None,
+        "generation": {},
+    }
     assert partial["by_intent"]["unknown"]["sample_count"] == 1
 
 
@@ -334,3 +346,34 @@ def test_aggregate_tolerates_none_generation_metrics() -> None:
     assert summary["generation"]["faithfulness"] is None
     assert summary["valid_counts"]["generation.faithfulness"] == 0
     assert summary["by_intent"]["returns"]["generation"] == {}
+
+
+def test_is_refusal_matches_markers_and_handles_empty_answer() -> None:
+    assert ev.is_refusal("抱歉，知识库中未收录该商品的折扣信息。")
+    assert ev.is_refusal("资料中没有找到相关说明，无法确定。")
+    assert ev.is_refusal("未提及该活动。")
+    assert not ev.is_refusal("会员在生日当月可享受 8 折优惠。")
+    assert not ev.is_refusal(None)
+    assert not ev.is_refusal("")
+
+
+def test_aggregate_reports_refusal_accuracy_for_unanswerable_records() -> None:
+    records = [
+        _record("size", ["unanswerable"], hit=None, answerable=False,
+                answer="抱歉，资料未收录该尺码。"),
+        _record("size", ["unanswerable"], hit=None, answerable=False,
+                answer="会员生日当月可享 8 折。"),
+        _record("size", ["unanswerable"], hit=None, answerable=False, answer=None),
+    ]
+
+    summary = ev.aggregate(records)
+
+    assert summary["answerable_count"] == 0
+    assert summary["generation"] == {}
+    assert summary["unanswerable"]["count"] == 3
+    assert summary["unanswerable"]["refused"] == 1
+    assert math.isclose(
+        summary["unanswerable"]["refusal_accuracy"], 1 / 3, rel_tol=1e-9
+    )
+    assert summary["by_tag"]["unanswerable"]["unanswerable"]["refused"] == 1
+    assert summary["by_tag"]["unanswerable"]["generation"] == {}

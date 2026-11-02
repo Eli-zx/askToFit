@@ -19,7 +19,7 @@ from config import Config
 
 logger = get_logger(__name__)
 
-IntentSource = Literal["bert", "keyword", "default"]
+IntentSource = Literal["bert", "keyword", "default", "rule"]
 
 # 顺序即平票优先级
 _INTENT_LABELS: dict[str, str] = {
@@ -186,6 +186,30 @@ _GREETING = re.compile(
     re.IGNORECASE,
 )
 
+# 转人工类问题本质上是在问“怎么联系真人”，需要走知识库检索；
+# BERT 会把“客服/人工”当成问候语，这里用确定性规则先拦住。
+_HUMAN_AGENT_KEYWORDS = (
+    "转人工",
+    "人工客服",
+    "找人工",
+    "联系人工",
+    "转客服",
+    "接人工",
+    "人工服务",
+)
+
+
+def is_human_agent_question(question: str) -> bool:
+    """是否为转人工类请求；这类问题自带完整语境，不需要多轮改写。"""
+    text = normalize_question(question)
+    return bool(text) and any(keyword in text for keyword in _HUMAN_AGENT_KEYWORDS)
+
+
+def _human_agent_override(text: str) -> IntentResult | None:
+    if any(keyword in text for keyword in _HUMAN_AGENT_KEYWORDS):
+        return IntentResult("other", confidence=0.99, source="rule")
+    return None
+
 _INTENT_GUIDANCE: dict[str, str] = {
     "return_exchange": "先明确是否支持以及时效，再说明商品状态、吊牌/包装要求、运费承担和操作入口。",
     "invoice": "准确说明发票类型、申请时限、开票时长、所需资料以及退换货后的红冲规则。",
@@ -223,7 +247,7 @@ class IntentResult:
         if intent not in _INTENT_LABELS:
             intent = "other"
         source = str(data.get("source") or "default")
-        if source not in {"bert", "keyword", "default"}:
+        if source not in {"bert", "keyword", "default", "rule"}:
             source = "default"
         scores = data.get("scores")
         return cls(
@@ -247,6 +271,9 @@ def classify_intent_keyword(question: str) -> IntentResult:
     text = normalize_question(question)
     if not text:
         return IntentResult("other", confidence=1.0, source="default")
+    human_agent = _human_agent_override(text)
+    if human_agent is not None:
+        return human_agent
     if _GREETING.match(text):
         return IntentResult("greeting", confidence=0.95, source="keyword")
 
@@ -302,6 +329,10 @@ async def classify_intent_detailed(
     text = normalize_question(question)
     if not text:
         return IntentResult("other", confidence=1.0, source="default")
+    # 规则优先于 BERT 与缓存：旧缓存里可能已经存了 greeting，不能被它带偏
+    human_agent = _human_agent_override(text)
+    if human_agent is not None:
+        return human_agent
 
     cache_key = _cache_key(text)
     if redis is not None and Config.cache_enabled:

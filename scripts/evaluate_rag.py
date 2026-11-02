@@ -461,6 +461,33 @@ def _ragas_metric_specs() -> dict[str, tuple[str, Any]]:
     }
 
 
+def _metric_available(value: Any) -> bool:
+    """None / NaN / 非数字都视为该题该项指标不可用。"""
+    if value is None:
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number)
+
+
+def _cached_scores_usable(cached: Any, metric_names: Iterable[str]) -> bool:
+    """缓存必须包含全部指标的可用分数；缺失项留给下次重跑，避免永久复用 None。"""
+    return isinstance(cached, dict) and all(
+        _metric_available(cached.get(name)) for name in metric_names
+    )
+
+
+def _first_usable_value(row: Any, columns: Iterable[str]) -> Any:
+    """按别名顺序返回第一个有限数值，避免后一个缺失别名覆盖前面的有效值。"""
+    for column in columns:
+        value = row.get(column) if hasattr(row, "get") else getattr(row, column, None)
+        if _metric_available(value):
+            return value
+    return None
+
+
 def _run_ragas(
     records: list[dict[str, Any]],
     *,
@@ -513,12 +540,15 @@ def _run_ragas(
 
     specs = _ragas_metric_specs()
     metric_objects = []
-    column_to_key: dict[str, str] = {}
+    # 每个指标可能对应多个 RAGAS 列名（不同版本命名不同），按顺序取第一个可用值
+    aliases: dict[str, list[str]] = {}
     for name in metric_names:
         key, factory = specs[name]
         metric = factory()
-        column_to_key[key] = name
-        column_to_key[name] = name
+        columns = aliases.setdefault(name, [])
+        for column in (key, name):
+            if column not in columns:
+                columns.append(column)
         metric_objects.append(metric)
     cache_prefix = f"{judge_model}|{ragas_version}|{','.join(metric_names)}"
 
@@ -538,10 +568,7 @@ def _run_ragas(
         ).hexdigest()
         cache_key = f"{cache_prefix}|{sample_hash}"
         cached = cache.get(cache_key)
-        if (
-            isinstance(cached, dict)
-            and all(name in cached for name in metric_names)
-        ):
+        if _cached_scores_usable(cached, metric_names):
             record["generation_metrics"] = {
                 name: cached.get(name) for name in metric_names
             }
@@ -602,20 +629,20 @@ def _run_ragas(
         logger.exception("RAGAS 评估失败（%s）", _site())
         return ragas_version, cache, len(pending)
 
-    normalized_rows: list[dict[str, Any]] = []
-    for row in rows:
-        normalized_rows.append(
-            {
-                cli_name: row.get(column)
-                for column, cli_name in column_to_key.items()
-            }
-        )
+    normalized_rows: list[dict[str, Any]] = [
+        {
+            name: _first_usable_value(row, columns)
+            for name, columns in aliases.items()
+        }
+        for row in rows
+    ]
     ev.merge_ragas_scores(pending, normalized_rows, metric_names)
 
     failed = 0
     for record in pending:
         scores = record.get("generation_metrics") or {}
-        if any(scores.get(name) is None for name in metric_names):
+        # 只有所有指标都不可用才算该题完全失败；单项缺失由 valid_counts 体现
+        if not any(_metric_available(scores.get(name)) for name in metric_names):
             failed += 1
         cache[record["_cache_key"]] = {
             name: scores.get(name) for name in metric_names
@@ -727,12 +754,50 @@ def write_reports(
     )
     generation = aggregate.get("generation") or {}
     if generation:
-        lines.extend(["| 指标 | 均值 | 有效样本 |", "| --- | --- | --- |"])
+        answerable = aggregate.get("answerable_count", 0)
+        lines.extend(
+            [
+                f"仅统计可回答样本（{answerable} 条）；不可回答样本单独看“正确拒答”。",
+                "",
+                "| 指标 | 均值 | 有效样本 |",
+                "| --- | --- | --- |",
+            ]
+        )
         for name, value in generation.items():
             valid = aggregate["valid_counts"].get(f"generation.{name}", 0)
             lines.append(f"| {name} | {_format_metric(value)} | {valid} |")
     else:
         lines.append("未运行官方 RAGAS，生成指标标记为不可用。")
+
+    unanswerable = aggregate.get("unanswerable") or {}
+    if unanswerable.get("count"):
+        lines.extend(
+            [
+                "",
+                "## 不可回答样本",
+                "",
+                f"- 样本数：{unanswerable['count']}",
+                f"- 正确拒答：{unanswerable['refused']}",
+                f"- 正确拒答率：{_format_metric(unanswerable.get('refusal_accuracy'))}",
+            ]
+        )
+        unanswerable_generation = unanswerable.get("generation") or {}
+        if unanswerable_generation:
+            lines.extend(
+                [
+                    "",
+                    "RAGAS 分数只作参考：正确答案通常是在拒绝作答，忠实度/相关性会天然偏低。",
+                    "",
+                    "| 指标 | 均值 | 有效样本 |",
+                    "| --- | --- | --- |",
+                ]
+            )
+            for name, value in unanswerable_generation.items():
+                valid = aggregate["valid_counts"].get(
+                    f"unanswerable.generation.{name}", 0
+                )
+                lines.append(f"| {name} | {_format_metric(value)} | {valid} |")
+
     lines.extend(
         [
             "",
@@ -811,6 +876,12 @@ async def persist(
             owner_id = await db.scalar(select(User.id).order_by(User.id.asc()).limit(1))
         owner_id = int(owner_id) if owner_id is not None else None
 
+        generation_metrics = dict(aggregate.get("generation") or {})
+        refusal_accuracy = (aggregate.get("unanswerable") or {}).get("refusal_accuracy")
+        if refusal_accuracy is not None:
+            # 与 RAGAS 指标同列展示，名称在报告里单独标注口径
+            generation_metrics["refusal_accuracy"] = refusal_accuracy
+
         errors = [record for record in records if record.get("error")]
         status = (
             "failed"
@@ -850,7 +921,7 @@ async def persist(
             "sample_count": aggregate["sample_count"],
             "answerable_count": aggregate["answerable_count"],
             "retrieval_metrics": aggregate["retrieval"],
-            "generation_metrics": aggregate.get("generation") or None,
+            "generation_metrics": generation_metrics or None,
             "config_snapshot": metadata.get("config_snapshot"),
             "status": status,
             "error": None,
@@ -997,8 +1068,22 @@ async def run(args: argparse.Namespace) -> int:
           f"section Recall@K="
           f"{_format_metric(aggregate['retrieval']['section']['recall_at_k'])}")
     if generate_answers and ragas_version:
+        valid_counts = aggregate.get("valid_counts") or {}
+        answerable = aggregate.get("answerable_count", 0)
         for name, value in (aggregate.get("generation") or {}).items():
-            print(f"  RAGAS {name}={_format_metric(value)}（失败 {judge_failed} 条）")
+            valid = valid_counts.get(f"generation.{name}", 0)
+            print(
+                f"  RAGAS {name}={_format_metric(value)}"
+                f"（可回答样本有效 {valid}/{answerable} 条）"
+            )
+        unanswerable = aggregate.get("unanswerable") or {}
+        if unanswerable.get("count"):
+            print(
+                f"  正确拒答率={_format_metric(unanswerable.get('refusal_accuracy'))}"
+                f"（{unanswerable['refused']}/{unanswerable['count']} 条不可回答样本）"
+            )
+        if judge_failed:
+            print(f"  完全无可用生成指标的样本：{judge_failed} 条")
     elif not generate_answers:
         print("  未生成答案与 RAGAS 指标（--retrieval-only）")
     print(f"  报告：{json_path}")

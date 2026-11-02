@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.models.user import User
 from app.services.captcha import CAPTCHA_KEY_PREFIX
+from config import Config
 
 
 async def fetch_captcha(client, redis) -> tuple[str, str]:
@@ -49,6 +50,17 @@ async def test_captcha_returns_png_data_uri(client, fake_redis) -> None:
     assert data["image"].startswith("data:image/png;base64,")
     assert data["expires_in"] > 0
     assert await fake_redis.ttl(CAPTCHA_KEY_PREFIX + data["captcha_id"]) > 0
+
+
+async def test_register_uses_dedicated_rate_limit(client, fake_redis, monkeypatch) -> None:
+    """注册限流独立于登录：演示现场多人共用出口 IP 时不应被 10 次/分钟卡住。"""
+    monkeypatch.setattr(Config, "rate_limit_register_requests", 1)
+
+    first = await register_user(client, fake_redis, username="bob")
+    second = await register_user(client, fake_redis, username="carol")
+
+    assert first.status_code == 201
+    assert second.status_code == 429
 
 
 async def test_register_success(client, fake_redis) -> None:

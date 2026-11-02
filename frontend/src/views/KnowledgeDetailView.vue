@@ -24,7 +24,7 @@ import UploadDocumentDialog from '@/components/UploadDocumentDialog.vue'
 import { useAuthStore } from '@/stores/auth'
 import { DOCUMENT_STATUS, EMBEDDING_MODES } from '@/utils/constants'
 import { toErrorMessage } from '@/utils/errors'
-import { formatDateTime, formatFileSize, truncate } from '@/utils/format'
+import { formatDateTime, formatFileSize, knowledgeMark, truncate } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,7 +43,9 @@ const kbId = computed(() => Number(route.params.id))
 const canManage = computed(
   () =>
     Boolean(knowledgeBase.value) &&
-    Number(knowledgeBase.value.owner_id) === Number(auth.user?.id),
+    // 管理员可管理全部知识库，其余用户只能管理自己创建的
+    (Boolean(auth.user?.is_admin) ||
+      Number(knowledgeBase.value.owner_id) === Number(auth.user?.id)),
 )
 
 const stats = computed(() => {
@@ -74,14 +76,27 @@ let loadToken = 0
 
 function syncPolling() {
   if (hasRunning.value && !pollTimer) {
-    pollTimer = setInterval(() => refreshDocuments(true), 3000)
+    pollTimer = setInterval(() => {
+      // 页面不可见时不发起轮询，避免演示中后台标签页持续占用后端
+      if (document.visibilityState === 'visible') refreshDocuments(true)
+    }, 3000)
   } else if (!hasRunning.value && pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
   }
 }
 
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible' && hasRunning.value) {
+    refreshDocuments(true)
+    syncPolling()
+  }
+}
+
+document.addEventListener('visibilitychange', onVisibilityChange)
+
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = null
 })
@@ -227,7 +242,12 @@ function previewChunks(document) {
       <template v-else-if="knowledgeBase">
         <header class="detail__head">
           <div class="detail__identity">
-            <span class="detail__icon">{{ knowledgeBase.name.slice(0, 1) }}</span>
+            <span
+              class="detail__icon"
+              :class="{ 'is-code': knowledgeMark(knowledgeBase.name).length > 1 }"
+            >
+              {{ knowledgeMark(knowledgeBase.name) }}
+            </span>
             <div class="detail__copy">
               <div class="detail__title-row">
                 <h1>{{ knowledgeBase.name }}</h1>
@@ -481,17 +501,23 @@ function previewChunks(document) {
   gap: 16px;
 }
 
+.detail__icon.is-code {
+  font-family: var(--atf-font-mono);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+}
+
 .detail__icon {
   display: grid;
   flex: none;
   width: 56px;
   height: 56px;
-  color: #fff;
+  color: var(--atf-bg);
+  font-family: var(--atf-font-display);
   font-size: 22px;
-  font-weight: 750;
-  background: linear-gradient(135deg, #5b5bd6, #8b7cf6 62%, #2dd4bf 140%);
-  border-radius: 17px;
-  box-shadow: 0 12px 28px rgba(91, 91, 214, 0.22);
+  font-weight: 600;
+  background: var(--atf-brand);
+  border-radius: var(--atf-radius-sm);
   place-items: center;
 }
 
@@ -502,18 +528,21 @@ function previewChunks(document) {
 }
 
 .detail__title-row h1 {
-  font-size: clamp(24px, 3vw, 32px);
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  font-family: var(--atf-font-display);
+  font-size: clamp(25px, 3vw, 33px);
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
 .detail__mode {
-  padding: 3px 9px;
-  color: #137d6d;
-  font-size: 9.5px;
-  font-weight: 700;
-  background: #e3faf5;
-  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--atf-mint);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  background: transparent;
+  border: 1px solid var(--atf-tone-mint-line);
+  border-radius: 1px;
 }
 
 .detail__copy > p {
@@ -532,10 +561,11 @@ function previewChunks(document) {
 
 .detail__chips span {
   padding: 3px 9px;
-  color: #7d809a;
-  font-size: 9.5px;
-  background: #f2f2f8;
-  border-radius: 999px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9px;
+  background: var(--atf-tone-gray-bg);
+  border-radius: 1px;
 }
 
 .detail__actions {
@@ -550,12 +580,12 @@ function previewChunks(document) {
   align-items: center;
   padding: 10px 14px;
   margin-top: 18px;
-  color: #5f5a8a;
+  color: var(--atf-muted);
   font-size: 11px;
-  line-height: 1.6;
-  background: linear-gradient(120deg, #f4f3ff, #f0fbf8);
-  border: 1px solid rgba(91, 91, 214, 0.16);
-  border-radius: 12px;
+  line-height: 1.65;
+  background: transparent;
+  border-left: 2px solid var(--atf-brand);
+  border-radius: 0;
   gap: 8px;
 }
 
@@ -565,66 +595,75 @@ function previewChunks(document) {
   font-size: 15px;
 }
 
+/* 与知识库列表同一套指标带：无容器、细线分隔、衬线大数字 */
 .detail__stats {
   display: flex;
-  align-items: center;
-  padding: 14px 18px;
-  margin-top: 24px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  border-radius: 16px;
-  gap: 34px;
+  align-items: stretch;
+  padding: 16px 0 14px;
+  margin-top: 30px;
+  border-top: 1px solid var(--atf-line-strong);
+  border-bottom: 1px solid var(--atf-line-strong);
+  gap: 0;
 }
 
 .detail__stat {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
-  gap: 1px;
+  min-width: 138px;
+  padding: 0 26px;
+  gap: 4px;
+}
+
+.detail__stat:first-child {
+  padding-left: 0;
+}
+
+.detail__stat + .detail__stat {
+  border-left: 1px solid var(--atf-line);
 }
 
 .detail__stat strong {
-  font-size: 20px;
-  font-weight: 800;
+  font-family: var(--atf-font-display);
+  font-size: clamp(30px, 3vw, 38px);
+  font-weight: 500;
   letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail__stat span {
   color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
-.detail__stat.tone-violet strong {
-  color: var(--atf-brand-deep);
-}
-
-.detail__stat.tone-mint strong {
-  color: #13806f;
-}
-
-.detail__stat.tone-blue strong {
-  color: #2563a8;
-}
-
+.detail__stat.tone-violet strong,
+.detail__stat.tone-mint strong,
+.detail__stat.tone-blue strong,
 .detail__stat.tone-peach strong {
-  color: #b15a3c;
+  color: var(--atf-ink);
 }
 
 .detail__parsing {
   display: inline-flex;
   align-items: center;
-  padding: 5px 11px;
+  padding: 0 0 0 22px;
   margin-left: auto;
-  color: #8a6a24;
-  font-size: 9.5px;
-  background: #fff8e8;
-  border-radius: 999px;
+  color: var(--atf-tone-gold);
+  font-size: 10px;
+  background: transparent;
+  border-left: 1px solid var(--atf-line);
   gap: 6px;
 }
 
 .detail__parsing i {
   width: 5px;
   height: 5px;
-  background: #e0a52e;
+  background: var(--atf-tone-gold);
   border-radius: 50%;
   animation: atf-pulse 1.4s ease-in-out infinite;
 }
@@ -653,12 +692,14 @@ function previewChunks(document) {
 }
 
 .detail__docs-count {
-  padding: 4px 10px;
-  color: var(--atf-brand);
+  padding: 0;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 10px;
-  font-weight: 650;
-  background: var(--atf-brand-soft);
-  border-radius: 999px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  background: transparent;
+  border-radius: 0;
 }
 
 .detail__empty {
@@ -672,13 +713,13 @@ function previewChunks(document) {
 
 .detail__empty-icon {
   display: grid;
-  width: 54px;
-  height: 54px;
-  margin-bottom: 6px;
-  color: var(--atf-brand);
-  font-size: 24px;
-  background: var(--atf-brand-soft);
-  border-radius: 16px;
+  width: auto;
+  height: auto;
+  margin-bottom: 8px;
+  color: var(--atf-bronze);
+  font-size: 26px;
+  background: transparent;
+  border-radius: 0;
   place-items: center;
 }
 
@@ -702,8 +743,8 @@ function previewChunks(document) {
 
 .detail__table {
   --el-table-border-color: var(--atf-line);
-  --el-table-header-bg-color: #fafaff;
-  --el-table-row-hover-bg-color: #fbfbff;
+  --el-table-header-bg-color: var(--atf-surface);
+  --el-table-row-hover-bg-color: var(--atf-th-bg);
   min-width: 960px;
   font-size: 11.5px;
 }
@@ -726,41 +767,30 @@ function previewChunks(document) {
   gap: 10px;
 }
 
+/* 文件类型只保留字母与细框，不再用彩色方块抢强调色 */
 .doc-cell__icon {
   display: grid;
   flex: none;
   width: 34px;
   height: 34px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  border-radius: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: 1px solid var(--atf-line-strong);
+  border-radius: 0;
   place-items: center;
 }
 
-.file-pdf {
-  color: #b23a48;
-  background: #ffecee;
-}
-
-.file-ppt {
-  color: #b15a1c;
-  background: #fff1e4;
-}
-
-.file-md {
-  color: #2563a8;
-  background: #e8f2ff;
-}
-
-.file-doc {
-  color: #6846d8;
-  background: #efeaff;
-}
-
+.file-pdf,
+.file-ppt,
+.file-md,
+.file-doc,
 .file-img {
-  color: #137d6d;
-  background: #e3faf5;
+  color: var(--atf-muted);
+  background: transparent;
 }
 
 .doc-cell__copy {
@@ -780,8 +810,8 @@ function previewChunks(document) {
 }
 
 .doc-cell__copy span {
-  color: #a3a6bd;
-  font-size: 9.5px;
+  color: var(--atf-muted);
+  font-size: 10.5px;
 }
 
 .doc-cell__meta {
@@ -791,94 +821,101 @@ function previewChunks(document) {
 }
 
 .doc-cell__version {
-  padding: 0 6px;
-  color: #7d809a;
-  font-size: 9px;
+  padding: 0 5px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
   font-style: normal;
-  font-weight: 650;
-  background: #f2f2f8;
-  border-radius: 999px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid var(--atf-line);
+  border-radius: 0;
 }
 
 .doc-cell__action {
-  padding: 0 6px;
-  color: #2563a8;
-  font-size: 9px;
+  padding: 0 5px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 9.5px;
   font-style: normal;
-  font-weight: 650;
-  background: #e8f2ff;
-  border-radius: 999px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid var(--atf-line);
+  border-radius: 0;
 }
 
 .doc-cell__action.is-updated {
-  color: #137d6d;
-  background: #e3faf5;
+  color: var(--atf-bronze);
+  border-color: var(--atf-line-strong);
 }
 
 .doc-cell__action.is-mineru {
-  color: #7a4bb3;
-  background: #f1e9ff;
+  color: var(--atf-bronze);
+  border-color: var(--atf-line-strong);
 }
 
+/* 状态用“点 + 字”，不用彩色胶囊 */
 .status-pill {
   display: inline-flex;
   align-items: center;
-  padding: 3px 9px;
-  font-size: 9.5px;
-  font-weight: 650;
-  border-radius: 999px;
-  gap: 5px;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: transparent;
+  border-radius: 0;
+  gap: 6px;
 }
 
 .status-pill i {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
 }
 
 .status-completed {
-  color: #137d6d;
-  background: #e3faf5;
+  color: var(--atf-mint);
+  background: transparent;
 }
 
 .status-completed i {
-  background: #2dd4bf;
+  background: var(--atf-mint);
 }
 
 .status-processing {
-  color: #9a6a20;
-  background: #fff8e8;
+  color: var(--atf-peach);
+  background: transparent;
 }
 
 .status-processing i {
-  background: #e0a52e;
+  background: var(--atf-peach);
 }
 
 .status-pending {
-  color: #5f6280;
-  background: #f1f2f7;
+  color: var(--atf-muted);
+  background: transparent;
 }
 
 .status-pending i {
-  background: #a3a6bd;
+  background: var(--atf-muted);
 }
 
 .status-skipped {
-  color: #5f6280;
-  background: #f1f2f7;
+  color: var(--atf-muted);
+  background: transparent;
 }
 
 .status-skipped i {
-  background: #a3a6bd;
+  background: var(--atf-muted);
 }
 
 .status-failed {
-  color: #b03a47;
-  background: #ffecef;
+  color: var(--atf-brand-deep);
+  background: transparent;
 }
 
 .status-failed i {
-  background: #e05a68;
+  background: var(--atf-brand);
 }
 
 .status-pill.is-running i {
@@ -886,7 +923,7 @@ function previewChunks(document) {
 }
 
 .doc-chunk {
-  color: var(--atf-brand-deep);
+  color: var(--atf-ink-soft);
   font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -905,12 +942,13 @@ function previewChunks(document) {
 }
 
 .doc-params small {
-  color: #a3a6bd;
+  color: var(--atf-muted);
   font-size: 9px;
 }
 
 .doc-time {
-  color: #8b8eaa;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -945,13 +983,35 @@ function previewChunks(document) {
   }
 
   .detail__stats {
-    flex-wrap: wrap;
-    gap: 18px 30px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+  }
+
+  .detail__stat {
+    min-width: 0;
+    padding: 12px 16px;
+  }
+
+  .detail__stat:nth-child(odd) {
+    padding-left: 0;
+  }
+
+  .detail__stat:nth-child(even) {
+    border-left: 1px solid var(--atf-line);
+  }
+
+  .detail__stat:nth-child(n + 3) {
+    border-top: 1px solid var(--atf-line);
   }
 
   .detail__parsing {
+    grid-column: 1 / -1;
     width: 100%;
+    padding: 10px 0 0;
     margin-left: 0;
+    border-top: 1px solid var(--atf-line);
+    border-left: 0;
   }
 
   .detail__docs {

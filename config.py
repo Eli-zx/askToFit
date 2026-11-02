@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-@Author  : Vincent
+@Author  : Eli
 @Time    : 2026/7/9 21:39
 @File    : config.py
 @Function : 全局配置。所有可变参数均在实例化时读取环境变量，支持 .env 覆盖。
@@ -57,6 +57,14 @@ class Settings:
     app_version: str = "0.2.0"
     api_prefix: str = "/api"
     debug: bool = False
+    # 允许跨域的前端地址；演示域名指向 5173（构建预览同为 5173），nginx 同源部署可不依赖
+    cors_origins: tuple[str, ...] = (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "http://localhost:3000",
+    )
 
     # ===== 路径 =====
     base_dir: Path = BASE_DIR
@@ -72,6 +80,8 @@ class Settings:
     embedding_dim: int = 1024
     embedding_batch_size: int = 16
     validate_models_on_startup: bool = True
+    # 模型保活间隔（秒）：定期跑一次极短推理，避免空闲后首个请求冷启动过慢；0 关闭
+    model_warmup_interval_seconds: float = 600.0
 
     # ===== MySQL =====
     host: str = "localhost"
@@ -79,6 +89,10 @@ class Settings:
     user: str = "root"
     password: str = "123456"
     database: str = "asktofit"
+    # 连接池：SSE 流式请求在返回前会主动释放连接，池大小按并发注册/登录与普通查询估算
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout: float = 10.0
 
     # ===== Redis =====
     redis_host: str = "localhost"
@@ -151,7 +165,7 @@ class Settings:
     strategy_enabled: bool = True
     strategy_selector_llm_enabled: bool = False
     strategy_selector_model: str = ""
-    strategy_timeout_seconds: float = 8.0
+    strategy_timeout_seconds: float = 4.0
     strategy_max_subqueries: int = 3
     strategy_max_query_chars: int = 200
     strategy_hyde_max_chars: int = 240
@@ -169,6 +183,9 @@ class Settings:
     bm25_section_weight: float = 2.0
     bm25_content_weight: float = 1.0
     bm25_max_corpus_chunks: int = 50000
+    bm25_max_total_chunks: int = 100000
+    bm25_max_indexed_kbs: int = 20
+    bm25_max_concurrent_searches: int = 2
     bm25_min_query_coverage: float = 0.4
 
     # ===== 意图识别（BERT） =====
@@ -182,7 +199,15 @@ class Settings:
 
     # ===== 重排序 / RAG =====
     rerank_enabled: bool = True
-    rerank_candidate_k: int = 20
+    # CPU 上交叉编码器单候选约 1.0~1.3 秒，耗时主要由候选数决定；
+    # 默认收紧到 5 候选 × 160 字，空载重排序约 5 秒。
+    rerank_candidate_k: int = 5
+    rerank_passage_chars: int = 160
+    rerank_max_length: int = 192
+    # 重排序超时（秒）：排队+推理总预算，超时按向量顺序降级；0 表示不限制
+    rerank_timeout_seconds: float = 6.0
+    rerank_batch_size: int = 1
+    rerank_max_concurrent: int = 1
     rerank_score_threshold: float = 0.25
     # 重排序失败时的显式策略：drop=丢弃候选并记录缺口；vector=明示降级为向量排序
     rerank_failure_mode: str = "drop"
@@ -207,9 +232,15 @@ class Settings:
     retrieval_cache_ttl: int = 180
     retrieval_degraded_cache_ttl: int = 30
     embedding_cache_ttl: int = 86400
+    retrieval_singleflight: bool = True
+    cache_ttl_jitter: float = 0.1
 
     # ===== 权限 =====
     admin_usernames: tuple[str, ...] = ()
+
+    # ===== 评估看板 =====
+    # 样本数低于该值的运行只保留在列表中，不进入概览与趋势
+    eval_min_meaningful_samples: int = 10
 
     # ===== 可观测 / 限流 =====
     metrics_enabled: bool = True
@@ -217,6 +248,8 @@ class Settings:
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
     rate_limit_login_requests: int = 10
+    # 注册独立限流：演示现场同一 NAT 下大量新用户注册，不能沿用登录的 10 次/分钟
+    rate_limit_register_requests: int = 10
 
     # ===== 大模型容错 =====
     llm_timeout_seconds: float = 60.0
@@ -227,8 +260,19 @@ class Settings:
 
     # ===== 并发 / 背压 =====
     max_concurrent_llm: int = 8
+    # 管理员独立通道：普通通道再满，管理员也不会排在普通用户后面
+    llm_admin_slots: int = 4
     max_concurrent_embedding: int = 2
+    password_hash_concurrency: int = 2
+    llm_queue_timeout_seconds: float = 5.0
+    llm_admin_queue_timeout_seconds: float = 30.0
     upload_task_ttl: int = 86400
+    # 持久化入库任务与向量 outbox
+    task_max_attempts: int = 3
+    task_lease_seconds: int = 3600
+    task_poll_seconds: float = 2.0
+    vector_outbox_max_attempts: int = 5
+    vector_outbox_lease_seconds: int = 600
 
     # ===== 日志 =====
     log_level: str = "INFO"
@@ -240,16 +284,21 @@ class Settings:
     _env_spec: dict[str, tuple[str, Callable[[str], Any]]] = field(
         default_factory=lambda: {
             "debug": ("DEBUG", lambda v: v.lower() in {"1", "true", "yes", "on"}),
+            "cors_origins": ("CORS_ORIGINS", _split_csv),
             "bge_m3": ("BGE_M3_PATH", str),
             "bge_reranker": ("BGE_RERANKER_PATH", str),
             "embedding_device": ("EMBEDDING_DEVICE", str),
             "embedding_batch_size": ("EMBEDDING_BATCH_SIZE", int),
             "validate_models_on_startup": ("VALIDATE_MODELS_ON_STARTUP", lambda v: v.lower() in {"1", "true", "yes", "on"}),
+            "model_warmup_interval_seconds": ("MODEL_WARMUP_INTERVAL_SECONDS", float),
             "host": ("MYSQL_HOST", str),
             "port": ("MYSQL_PORT", int),
             "user": ("MYSQL_USER", str),
             "password": ("MYSQL_PASSWORD", str),
             "database": ("MYSQL_DATABASE", str),
+            "db_pool_size": ("DB_POOL_SIZE", int),
+            "db_max_overflow": ("DB_MAX_OVERFLOW", int),
+            "db_pool_timeout": ("DB_POOL_TIMEOUT", float),
             "redis_host": ("REDIS_HOST", str),
             "redis_port": ("REDIS_PORT", int),
             "redis_password": ("REDIS_PASSWORD", str),
@@ -305,6 +354,9 @@ class Settings:
             "bm25_section_weight": ("BM25_SECTION_WEIGHT", float),
             "bm25_content_weight": ("BM25_CONTENT_WEIGHT", float),
             "bm25_max_corpus_chunks": ("BM25_MAX_CORPUS_CHUNKS", int),
+            "bm25_max_total_chunks": ("BM25_MAX_TOTAL_CHUNKS", int),
+            "bm25_max_indexed_kbs": ("BM25_MAX_INDEXED_KBS", int),
+            "bm25_max_concurrent_searches": ("BM25_MAX_CONCURRENT_SEARCHES", int),
             "bm25_min_query_coverage": ("BM25_MIN_QUERY_COVERAGE", float),
             "intent_enabled": ("INTENT_ENABLED", lambda v: v.lower() in {"1", "true", "yes", "on"}),
             "intent_model_path": ("INTENT_MODEL_PATH", str),
@@ -315,6 +367,11 @@ class Settings:
             "intent_cache_ttl": ("INTENT_CACHE_TTL", int),
             "rerank_enabled": ("RERANK_ENABLED", lambda v: v.lower() in {"1", "true", "yes", "on"}),
             "rerank_candidate_k": ("RERANK_CANDIDATE_K", int),
+            "rerank_passage_chars": ("RERANK_PASSAGE_CHARS", int),
+            "rerank_max_length": ("RERANK_MAX_LENGTH", int),
+            "rerank_timeout_seconds": ("RERANK_TIMEOUT_SECONDS", float),
+            "rerank_batch_size": ("RERANK_BATCH_SIZE", int),
+            "rerank_max_concurrent": ("RERANK_MAX_CONCURRENT", int),
             "rerank_score_threshold": ("RERANK_SCORE_THRESHOLD", float),
             "rerank_failure_mode": ("RERANK_FAILURE_MODE", str),
             "rerank_max_consecutive_failures": ("RERANK_MAX_CONSECUTIVE_FAILURES", int),
@@ -334,20 +391,33 @@ class Settings:
             "retrieval_cache_ttl": ("RETRIEVAL_CACHE_TTL", int),
             "retrieval_degraded_cache_ttl": ("RETRIEVAL_DEGRADED_CACHE_TTL", int),
             "embedding_cache_ttl": ("EMBEDDING_CACHE_TTL", int),
+            "retrieval_singleflight": ("RETRIEVAL_SINGLEFLIGHT", lambda v: v.lower() in {"1", "true", "yes", "on"}),
+            "cache_ttl_jitter": ("CACHE_TTL_JITTER", float),
             "admin_usernames": ("ADMIN_USERNAMES", _split_csv),
+            "eval_min_meaningful_samples": ("EVAL_MIN_MEANINGFUL_SAMPLES", int),
             "metrics_enabled": ("METRICS_ENABLED", lambda v: v.lower() in {"1", "true", "yes", "on"}),
             "rate_limit_enabled": ("RATE_LIMIT_ENABLED", lambda v: v.lower() in {"1", "true", "yes", "on"}),
             "rate_limit_requests": ("RATE_LIMIT_REQUESTS", int),
             "rate_limit_window_seconds": ("RATE_LIMIT_WINDOW_SECONDS", int),
             "rate_limit_login_requests": ("RATE_LIMIT_LOGIN_REQUESTS", int),
+            "rate_limit_register_requests": ("RATE_LIMIT_REGISTER_REQUESTS", int),
             "llm_timeout_seconds": ("LLM_TIMEOUT_SECONDS", float),
             "llm_max_retries": ("LLM_MAX_RETRIES", int),
             "llm_retry_backoff_seconds": ("LLM_RETRY_BACKOFF_SECONDS", float),
             "llm_circuit_failure_threshold": ("LLM_CIRCUIT_FAILURE_THRESHOLD", int),
             "llm_circuit_reset_seconds": ("LLM_CIRCUIT_RESET_SECONDS", int),
             "max_concurrent_llm": ("MAX_CONCURRENT_LLM", int),
+            "llm_admin_slots": ("LLM_ADMIN_SLOTS", int),
             "max_concurrent_embedding": ("MAX_CONCURRENT_EMBEDDING", int),
+            "password_hash_concurrency": ("PASSWORD_HASH_CONCURRENCY", int),
+            "llm_queue_timeout_seconds": ("LLM_QUEUE_TIMEOUT_SECONDS", float),
+            "llm_admin_queue_timeout_seconds": ("LLM_ADMIN_QUEUE_TIMEOUT_SECONDS", float),
             "upload_task_ttl": ("UPLOAD_TASK_TTL", int),
+            "task_max_attempts": ("TASK_MAX_ATTEMPTS", int),
+            "task_lease_seconds": ("TASK_LEASE_SECONDS", int),
+            "task_poll_seconds": ("TASK_POLL_SECONDS", float),
+            "vector_outbox_max_attempts": ("VECTOR_OUTBOX_MAX_ATTEMPTS", int),
+            "vector_outbox_lease_seconds": ("VECTOR_OUTBOX_LEASE_SECONDS", int),
             "log_level": ("LOG_LEVEL", str),
             "log_file": ("LOG_FILE", str),
             "log_max_bytes": ("LOG_MAX_BYTES", int),
@@ -396,6 +466,18 @@ class Settings:
             )
         if not 0.0 <= self.rerank_score_threshold <= 1.0:
             raise ValueError("RERANK_SCORE_THRESHOLD 必须在 0~1 之间")
+        if self.rerank_candidate_k < 1:
+            raise ValueError("RERANK_CANDIDATE_K 必须大于 0")
+        if self.rerank_passage_chars < 50:
+            raise ValueError("RERANK_PASSAGE_CHARS 不能小于 50")
+        if self.rerank_max_length < 32:
+            raise ValueError("RERANK_MAX_LENGTH 不能小于 32")
+        if self.rerank_timeout_seconds < 0:
+            raise ValueError("RERANK_TIMEOUT_SECONDS 不能为负")
+        if self.rerank_batch_size < 1:
+            raise ValueError("RERANK_BATCH_SIZE 必须大于 0")
+        if self.rerank_max_concurrent < 1:
+            raise ValueError("RERANK_MAX_CONCURRENT 必须大于 0")
         if not 0.0 <= self.intent_confidence_threshold <= 1.0:
             raise ValueError("INTENT_CONFIDENCE_THRESHOLD 必须在 0~1 之间")
         if self.bm25_mode not in {"off", "fallback", "fuse"}:
@@ -417,10 +499,46 @@ class Settings:
             raise ValueError("STRATEGY_TIMEOUT_SECONDS 与 STRATEGY_MAX_SUBQUERIES 必须为正数")
         if self.retrieval_degraded_cache_ttl < 0:
             raise ValueError("RETRIEVAL_DEGRADED_CACHE_TTL 不能为负")
+        if self.model_warmup_interval_seconds < 0:
+            raise ValueError("MODEL_WARMUP_INTERVAL_SECONDS 不能为负")
+        if self.bm25_max_corpus_chunks < 1 or self.bm25_max_total_chunks < 1:
+            raise ValueError("BM25_MAX_CORPUS_CHUNKS 与 BM25_MAX_TOTAL_CHUNKS 必须大于 0")
+        if self.bm25_max_indexed_kbs < 1:
+            raise ValueError("BM25_MAX_INDEXED_KBS 必须大于 0")
+        if self.bm25_max_concurrent_searches < 1:
+            raise ValueError("BM25_MAX_CONCURRENT_SEARCHES 必须大于 0")
+        if not 0.0 <= self.cache_ttl_jitter < 1.0:
+            raise ValueError("CACHE_TTL_JITTER 必须在 0~1 之间")
+        if self.password_hash_concurrency < 1:
+            raise ValueError("PASSWORD_HASH_CONCURRENCY 必须大于 0")
+        if self.llm_queue_timeout_seconds < 0:
+            raise ValueError("LLM_QUEUE_TIMEOUT_SECONDS 不能为负")
+        if self.llm_admin_queue_timeout_seconds < 0:
+            raise ValueError("LLM_ADMIN_QUEUE_TIMEOUT_SECONDS 不能为负")
+        if self.max_concurrent_llm < 1 or self.llm_admin_slots < 1:
+            raise ValueError("MAX_CONCURRENT_LLM 与 LLM_ADMIN_SLOTS 必须大于 0")
+        if self.db_pool_size < 1 or self.db_max_overflow < 0:
+            raise ValueError("DB_POOL_SIZE 必须大于 0，DB_MAX_OVERFLOW 不能为负")
+        if self.db_pool_timeout <= 0:
+            raise ValueError("DB_POOL_TIMEOUT 必须大于 0")
+        if self.upload_task_ttl < 60:
+            raise ValueError("UPLOAD_TASK_TTL 不能小于 60 秒")
+        if self.task_max_attempts < 1 or self.task_lease_seconds < 1:
+            raise ValueError("TASK_MAX_ATTEMPTS 与 TASK_LEASE_SECONDS 必须大于 0")
+        if self.eval_min_meaningful_samples < 1:
+            raise ValueError("EVAL_MIN_MEANINGFUL_SAMPLES 必须大于 0")
+        if self.task_poll_seconds <= 0:
+            raise ValueError("TASK_POLL_SECONDS 必须大于 0")
+        if self.vector_outbox_max_attempts < 1 or self.vector_outbox_lease_seconds < 1:
+            raise ValueError(
+                "VECTOR_OUTBOX_MAX_ATTEMPTS 与 VECTOR_OUTBOX_LEASE_SECONDS 必须大于 0"
+            )
         if self.llm_max_retries < 1:
             raise ValueError("LLM_MAX_RETRIES 至少为 1")
         if self.rate_limit_requests < 1 or self.rate_limit_window_seconds < 1:
             raise ValueError("限流参数必须为正整数")
+        if self.rate_limit_login_requests < 1 or self.rate_limit_register_requests < 1:
+            raise ValueError("RATE_LIMIT_LOGIN_REQUESTS 与 RATE_LIMIT_REGISTER_REQUESTS 必须大于 0")
         self.log_level = self.log_level.upper()
 
     def validate_model_paths(self) -> None:

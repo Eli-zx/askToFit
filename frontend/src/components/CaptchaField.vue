@@ -93,9 +93,9 @@ defineExpose({ refresh, captchaId })
   overflow: hidden;
   color: var(--atf-muted);
   font-size: 12px;
-  background: #f4f4fa;
+  background: var(--atf-bg);
   border: 1px solid var(--atf-line);
-  border-radius: 10px;
+  border-radius: var(--atf-radius-sm);
   cursor: pointer;
   place-items: center;
 }
@@ -105,6 +105,15 @@ defineExpose({ refresh, captchaId })
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* 后端验证码是彩色白底位图：去色后与纸面正片叠底，白底直接融进背景 */
+  filter: grayscale(1) contrast(1.3);
+  mix-blend-mode: multiply;
+}
+
+/* 暗色下先反相再去色，用滤色让白底消失，只留下浅色字形 */
+:global(html.dark .captcha__image img) {
+  filter: grayscale(1) invert(1) contrast(1.3);
+  mix-blend-mode: screen;
 }
 
 .captcha__refresh {
@@ -114,9 +123,9 @@ defineExpose({ refresh, captchaId })
   display: grid;
   width: 18px;
   height: 18px;
-  color: #fff;
+  color: var(--atf-bg);
   font-size: 11px;
-  background: rgba(23, 24, 47, 0.46);
+  background: var(--atf-overlay-strong);
   border-radius: 50%;
   opacity: 0;
   transition: opacity 0.2s ease;

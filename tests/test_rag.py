@@ -51,6 +51,43 @@ def test_build_sources_truncates_content_and_rounds_score() -> None:
     assert sources[0]["content"].endswith("…")
 
 
+def test_build_sources_with_query_uses_matched_child_excerpt() -> None:
+    """父块开头与问题无关时，出处应展示真正命中的子块里那句答案。"""
+    parent = "一、会员积分规则说明，消费一元累计一积分。" * 12
+    child = (
+        "一、积分规则\n"
+        "会员每消费 1 元累计 1 积分，生日月双倍。\n"
+        "三、洗涤保养\n"
+        "羊绒与真丝建议干洗，避免长时间浸泡与高温烘干。\n"
+        "九、常见问题\n"
+        "问：怎么转人工？\n"
+        "答：在店铺首页、商品页或订单页点击“在线客服”，"
+        "在对话框输入“人工”即可转接人工客服。"
+    )
+    hit = _hit(1, parent, score=0.9476)
+    hit["child_content"] = child
+
+    source = build_sources([hit], content_chars=120, query="转人工")[0]
+
+    assert "转接人工客服" in source["content"]
+    assert "会员积分规则说明" not in source["content"]
+    assert len(source["content"]) <= 122
+    assert source["content"].startswith("…")
+
+
+def test_build_sources_without_query_keeps_prefix_behavior() -> None:
+    """不传 query 时沿用原来的父块开头截断，保持既有调用兼容。"""
+    parent = "一、会员积分规则说明，消费一元累计一积分。" * 12
+    hit = _hit(1, parent)
+    hit["child_content"] = "问：怎么转人工？"
+
+    source = build_sources([hit], content_chars=80)[0]
+
+    assert source["content"].startswith("一、会员积分规则说明")
+    assert len(source["content"]) <= 81
+    assert source["content"].endswith("…")
+
+
 def test_trim_history_respects_rounds_and_orders() -> None:
     history = [
         {"role": "user", "content": "第一轮问题"},
@@ -114,6 +151,16 @@ def test_should_rewrite_only_for_follow_up(monkeypatch) -> None:
     assert should_rewrite("那换货呢？", history)
     assert should_rewrite("这个可以退吗", history)
     assert should_rewrite("短问题", history)
+    assert should_rewrite("有货吗", history)
+    # 新增口语化追问线索与无完整疑问结构的碎片
+    assert should_rewrite("我刚刚问的哪款衣服来着", history)
+    assert should_rewrite("对照预算做取舍", history)
+    assert should_rewrite("哪款更保暖", history)
+    assert should_rewrite("前面说的那个活动还有吗", history)
+    # 完整短问题不依赖历史改写，避免把上一轮主题拼进检索查询
+    assert not should_rewrite("支持以旧换新吗", history)
+    assert not should_rewrite("转人工", history)
+    assert not should_rewrite("人工客服", history)
     assert not should_rewrite("开发票要多久？", history)
     assert not should_rewrite("请问电子发票一般在审核通过后多久可以开具？", history)
     assert not should_rewrite("那换货呢？", [])

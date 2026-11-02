@@ -10,10 +10,10 @@ from datetime import UTC, datetime, timedelta
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_admin, get_current_user
 from app.core.logger import get_logger
 from app.core.rate_limit import enforce_rate_limit
 from app.core.redis_client import get_redis
@@ -31,6 +31,7 @@ from app.schemas.chat import (
     KnowledgeGapOut,
     KnowledgeGapStatItem,
     KnowledgeGapStats,
+    KnowledgeGapUserStat,
     KnowledgeGapUpdate,
     MessageListOut,
     MessageOut,
@@ -39,6 +40,7 @@ from app.schemas.chat import (
 from app.services.chat import stream_reply
 from app.services.intent import intent_label
 from app.services.llm import llm_service
+from app.services.priority import PRIORITY_ADMIN, PRIORITY_NORMAL
 from config import AVAILABLE_MODELS, Config
 
 logger = get_logger(__name__)
@@ -72,16 +74,12 @@ async def _validate_kb_ids(
     unique_ids = list(dict.fromkeys(int(kb_id) for kb_id in kb_ids))
     if not unique_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请至少选择一个知识库")
+    conditions = [KnowledgeBase.id.in_(unique_ids)]
+    # 普通用户只能检索公开知识库；管理员不受限制
+    if not user.is_admin:
+        conditions.append(KnowledgeBase.is_public.is_(True))
     rows = list(
-        await db.scalars(
-            select(KnowledgeBase).where(
-                KnowledgeBase.id.in_(unique_ids),
-                or_(
-                    KnowledgeBase.owner_id == user.id,
-                    KnowledgeBase.is_public.is_(True),
-                ),
-            )
-        )
+        await db.scalars(select(KnowledgeBase).where(*conditions))
     )
     mapping = {kb.id: kb for kb in rows}
     missing = [kb_id for kb_id in unique_ids if kb_id not in mapping]
@@ -331,7 +329,10 @@ async def send_message_stream(
     user: User = Depends(get_current_user),
     redis: aioredis.Redis = Depends(get_redis),
 ):
-    await enforce_rate_limit(redis, scope="chat", identity=str(user.id))
+    # 管理员演示通道不参与普通聊天限流，避免现场被自己的流量挤掉
+    is_admin = bool(user.is_admin)
+    if not is_admin:
+        await enforce_rate_limit(redis, scope="chat", identity=str(user.id))
     conversation = await _get_conversation(conversation_id, user, db)
     kbs = await _validate_kb_ids(conversation.kb_ids, user, db)
     question = payload.content.strip()
@@ -370,7 +371,6 @@ async def send_message_stream(
     if is_first_message and conversation.title in (DEFAULT_TITLE, "", None):
         conversation.title = question[:30]
     await db.commit()
-    await db.refresh(user_message)
 
     config_snapshot = {
         "model_name": conversation.model_name,
@@ -379,28 +379,38 @@ async def send_message_stream(
         "max_tokens": conversation.max_tokens,
         "history_rounds": rounds,
     }
+    # 流式响应可能持续数十秒，先把要用的标量全部取出来并主动归还数据库连接，
+    # 否则 100+ 个 SSE 请求会把连接池占满，普通页面请求会排队等连接。
+    conversation_pk = conversation.id
+    conversation_kb_ids = list(conversation.kb_ids or [])
+    user_pk = user.id
+    priority = PRIORITY_ADMIN if is_admin else PRIORITY_NORMAL
     logger.info(
-        "收到提问 conversation_id=%s user=%s question=%s",
-        conversation.id,
+        "收到提问 conversation_id=%s user=%s priority=%s question=%s",
+        conversation_pk,
         user.username,
+        priority,
         question[:80],
     )
+    await db.close()
 
     async def event_stream() -> AsyncIterator[str]:
+        # 注意：此生成器在响应阶段执行，不能再访问 db / conversation / user
         try:
             async for event, data in stream_reply(
-                conversation_id=conversation.id,
-                user_id=user.id,
+                conversation_id=conversation_pk,
+                user_id=user_pk,
                 question=question,
-                kb_ids=list(conversation.kb_ids),
+                kb_ids=conversation_kb_ids,
                 kb_modes=kb_modes,
                 history=history,
                 redis=redis,
+                priority=priority,
                 **config_snapshot,
             ):
                 yield _sse(event, data)
         except Exception:
-            logger.exception("SSE 问答流异常 conversation_id=%s", conversation_id)
+            logger.exception("SSE 问答流异常 conversation_id=%s", conversation_pk)
             yield _sse("error", {"message": "回答生成失败，请稍后重试"})
 
     return StreamingResponse(
@@ -428,20 +438,32 @@ async def list_knowledge_gaps(
     status_filter: str = Query("all", alias="status", pattern="^(all|open|resolved|ignored)$"),
     intent: str | None = Query(None, max_length=32),
     q: str | None = Query(None, max_length=100),
+    user_id: int | None = Query(None, ge=1),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> list[KnowledgeGap]:
-    stmt = select(KnowledgeGap).where(KnowledgeGap.user_id == user.id)
+    _: User = Depends(get_current_admin),
+) -> list[KnowledgeGapOut]:
+    """管理员视角：返回所有用户的缺口记录，可用 user_id 按提交人筛选。"""
+    stmt = select(KnowledgeGap).join(User, User.id == KnowledgeGap.user_id)
     if status_filter != "all":
         stmt = stmt.where(KnowledgeGap.status == status_filter)
     if intent:
         stmt = stmt.where(KnowledgeGap.intent == intent)
+    if user_id is not None:
+        stmt = stmt.where(KnowledgeGap.user_id == user_id)
     if q and q.strip():
         stmt = stmt.where(KnowledgeGap.question.like(f"%{q.strip()}%"))
-    rows = await db.scalars(
-        stmt.order_by(KnowledgeGap.id.desc()).offset(offset).limit(limit)
+    rows = await db.execute(
+        stmt.add_columns(User.username)
+        .order_by(KnowledgeGap.id.desc())
+        .offset(offset)
+        .limit(limit)
     )
-    return list(rows)
+    return [
+        KnowledgeGapOut.model_validate(gap).model_copy(
+            update={"username": username}
+        )
+        for gap, username in rows.all()
+    ]
 
 
 @router.get(
@@ -452,28 +474,47 @@ async def list_knowledge_gaps(
 async def knowledge_gap_stats(
     days: int = Query(14, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    _: User = Depends(get_current_admin),
 ) -> KnowledgeGapStats:
+    """管理员视角：统计全部用户的缺口记录，并按提交人汇总。"""
     rows = list(
-        await db.scalars(
-            select(KnowledgeGap)
-            .where(KnowledgeGap.user_id == user.id)
-            .order_by(KnowledgeGap.id.desc())
-        )
+        (
+            await db.execute(
+                select(KnowledgeGap, User.username)
+                .join(User, User.id == KnowledgeGap.user_id)
+                .order_by(KnowledgeGap.id.desc())
+            )
+        ).all()
     )
-    status_counter = Counter(gap.status or "open" for gap in rows)
-    intent_counter = Counter(gap.intent or "other" for gap in rows)
-    question_counter = Counter(gap.question.strip() for gap in rows if gap.question.strip())
+    gaps = [gap for gap, _ in rows]
+    status_counter = Counter(gap.status or "open" for gap in gaps)
+    intent_counter = Counter(gap.intent or "other" for gap in gaps)
+    question_counter = Counter(
+        gap.question.strip() for gap in gaps if gap.question.strip()
+    )
 
     start_date = (_now().date() - timedelta(days=days - 1)).isoformat()
     date_counter: Counter[str] = Counter()
-    for gap in rows:
+    user_stats: dict[int, dict] = {}
+    for gap, username in rows:
         day = gap.created_at.date().isoformat() if gap.created_at else ""
         if day >= start_date:
             date_counter[day] += 1
+        entry = user_stats.setdefault(
+            gap.user_id,
+            {
+                "user_id": gap.user_id,
+                "username": username or "—",
+                "total": 0,
+                "open": 0,
+            },
+        )
+        entry["total"] += 1
+        if (gap.status or "open") == "open":
+            entry["open"] += 1
 
     return KnowledgeGapStats(
-        total=len(rows),
+        total=len(gaps),
         open=status_counter.get("open", 0),
         resolved=status_counter.get("resolved", 0),
         ignored=status_counter.get("ignored", 0),
@@ -484,6 +525,13 @@ async def knowledge_gap_stats(
         by_date=[
             KnowledgeGapStatItem(key=day, label=day, count=count)
             for day, count in sorted(date_counter.items())
+        ],
+        by_user=[
+            KnowledgeGapUserStat(**entry)
+            for entry in sorted(
+                user_stats.values(),
+                key=lambda item: (-item["total"], item["username"]),
+            )
         ],
         top_questions=[
             KnowledgeGapStatItem(key=text, label=text, count=count)
@@ -501,15 +549,15 @@ async def update_knowledge_gap(
     gap_id: int,
     payload: KnowledgeGapUpdate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-) -> KnowledgeGap:
-    gap = await db.scalar(
-        select(KnowledgeGap).where(
-            KnowledgeGap.id == gap_id, KnowledgeGap.user_id == user.id
-        )
-    )
+    admin: User = Depends(get_current_admin),
+) -> KnowledgeGapOut:
+    """管理员可以更新任意用户的缺口记录。"""
+    gap = await db.get(KnowledgeGap, gap_id)
     if gap is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "知识缺口不存在")
+    username = await db.scalar(
+        select(User.username).where(User.id == gap.user_id)
+    )
 
     if payload.status is not None:
         gap.status = payload.status
@@ -520,9 +568,12 @@ async def update_knowledge_gap(
     await db.commit()
     await db.refresh(gap)
     logger.info(
-        "更新知识缺口 gap_id=%s status=%s user=%s",
+        "更新知识缺口 gap_id=%s status=%s admin=%s owner_id=%s",
         gap.id,
         gap.status,
-        user.username,
+        admin.username,
+        gap.user_id,
     )
-    return gap
+    return KnowledgeGapOut.model_validate(gap).model_copy(
+        update={"username": username}
+    )

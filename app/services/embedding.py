@@ -37,6 +37,10 @@ class EmbeddingService:
                 logger.info("BGE-M3 加载完成")
         return self._model
 
+    async def warmup(self) -> None:
+        """加载模型并执行一次短推理，避免首个请求承担加载与冷启动耗时。"""
+        await asyncio.to_thread(self._encode_sync, ["模型预热"], 1)
+
     @staticmethod
     def _convert_sparse(weights: dict) -> dict[int, float]:
         return {int(token): float(weight) for token, weight in weights.items() if float(weight) > 0}

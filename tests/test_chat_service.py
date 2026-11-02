@@ -43,6 +43,25 @@ async def test_rewrite_query_skips_previous_anaphoric_question(monkeypatch) -> N
     assert rewritten == "满多少包邮？ 那新疆呢？"
 
 
+async def test_rewrite_query_does_not_duplicate_same_question(monkeypatch) -> None:
+    """上一轮问题与本轮相同时，兜底不能拼成重复查询。"""
+
+    async def fake_complete(*args, **kwargs) -> str:
+        return "转人工"
+
+    monkeypatch.setattr(chat_module.llm_service, "complete", fake_complete)
+    history = [
+        {"role": "user", "content": "转人工"},
+        {"role": "assistant", "content": "可在在线客服输入“人工”转接。"},
+    ]
+
+    rewritten = await chat_module.rewrite_query(
+        "deepseekv4-flash", "转人工", history
+    )
+
+    assert rewritten == "转人工"
+
+
 async def test_rewrite_query_keeps_model_rewrite(monkeypatch) -> None:
     """模型给出完整改写时直接采用，不再拼接历史。"""
 
@@ -84,3 +103,22 @@ def test_score_summary_does_not_treat_fused_score_as_vector_score() -> None:
     assert summary["vector_score"] is None
     assert summary["best_score"] is None
     assert summary["retrieval_mode"] == "vector"
+
+
+def test_filter_qualified_keeps_timeout_fallback_under_drop(monkeypatch) -> None:
+    """超时是主动降级：即使 drop 策略也必须保留向量顺序候选。"""
+    monkeypatch.setattr(chat_module.Config, "rerank_failure_mode", "drop")
+    hits = [
+        {"chunk_uid": "uid-0", "score": 0.9, "vector_score": 0.9, "rerank_timeout": True},
+        {"chunk_uid": "uid-1", "score": 0.8, "vector_score": 0.8, "rerank_timeout": True},
+    ]
+
+    assert chat_module._filter_qualified(hits) == hits
+
+
+def test_filter_qualified_drops_model_failure_under_drop(monkeypatch) -> None:
+    """真正的模型失败仍按 drop 策略丢弃，与超时区分。"""
+    monkeypatch.setattr(chat_module.Config, "rerank_failure_mode", "drop")
+    hits = [{"chunk_uid": "uid-0", "score": 0.9, "rerank_failed": True}]
+
+    assert chat_module._filter_qualified(hits) == []

@@ -6,8 +6,13 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
+import { initTheme } from './composables/useTheme'
 import 'element-plus/dist/index.css'
+import 'element-plus/theme-chalk/dark/css-vars.css'
+import './styles/tokens.css'
 import './styles/base.css'
+
+initTheme()
 
 const app = createApp(App)
 

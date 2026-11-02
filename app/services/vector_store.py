@@ -124,6 +124,15 @@ class MilvusVectorStore:
         client.upsert(Config.collection_name, [row])
         client.flush(Config.collection_name)
 
+    def _upsert_many_sync(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        client = self._ensure_client()
+        batch = 200
+        for start in range(0, len(rows), batch):
+            client.upsert(Config.collection_name, rows[start : start + batch])
+        client.flush(Config.collection_name)
+
     def _delete_sync(self, expression: str) -> None:
         client = self._ensure_client()
         client.delete(Config.collection_name, filter=expression)
@@ -134,6 +143,10 @@ class MilvusVectorStore:
 
     async def upsert_chunk(self, row: dict[str, Any]) -> None:
         await asyncio.to_thread(self._upsert_sync, row)
+
+    async def upsert_chunks(self, rows: list[dict[str, Any]]) -> None:
+        """按主键幂等写入，重试不会产生重复向量。"""
+        await asyncio.to_thread(self._upsert_many_sync, rows)
 
     async def delete_by_doc(self, doc_id: int) -> None:
         await asyncio.to_thread(self._delete_sync, f"doc_id == {int(doc_id)}")

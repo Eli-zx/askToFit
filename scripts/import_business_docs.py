@@ -1,12 +1,12 @@
 """把业务文档导入公共知识库并执行真实入库与检索抽查。
 
-默认把 data/business_docs/ 下的 9 份文档导入到 eli 账号名下的公共知识库
-「服装售前知识库（2026 春夏）」，其他登录账号（如 demo）可直接检索。
+把 data/business_docs/ 下的业务文档导入到指定账号名下的公共知识库
+「服装售前知识库（2026 春夏）」，其他登录账号可直接检索。
 
 用法：
-    uv run python scripts/import_business_docs.py
-    uv run python scripts/import_business_docs.py --username eli --force
-    uv run python scripts/import_business_docs.py --skip-smoke
+    uv run python scripts/import_business_docs.py --username <账号>
+    uv run python scripts/import_business_docs.py --username <账号> --force
+    uv run python scripts/import_business_docs.py --username <账号> --skip-smoke
 """
 
 from __future__ import annotations
@@ -49,7 +49,6 @@ from config import Config  # noqa: E402
 
 logger = get_logger(__name__)
 
-DEFAULT_USERNAME = "eli"
 DEFAULT_KB_NAME = "服装售前知识库（2026 春夏）"
 DEFAULT_DOC_DIR = Path(Config.data_dir) / "business_docs"
 SUPPORTED = {
@@ -273,7 +272,7 @@ async def retrieval_smoke_test(kb_id: int) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--username", default=DEFAULT_USERNAME, help="知识库所属账号")
+    parser.add_argument("--username", required=True, help="知识库所属账号（必填）")
     parser.add_argument("--kb-name", default=DEFAULT_KB_NAME, help="公共知识库名称")
     parser.add_argument("--doc-dir", default=str(DEFAULT_DOC_DIR), help="业务文档目录")
     parser.add_argument("--force", action="store_true", help="删除并重新入库全部文档")

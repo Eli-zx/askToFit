@@ -108,6 +108,8 @@ class KnowledgeGapOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    user_id: int
+    username: str | None = None
     conversation_id: int | None = None
     question: str
     intent: str | None = None
@@ -135,6 +137,13 @@ class KnowledgeGapStatItem(BaseModel):
     count: int
 
 
+class KnowledgeGapUserStat(BaseModel):
+    user_id: int
+    username: str
+    total: int
+    open: int
+
+
 class KnowledgeGapStats(BaseModel):
     total: int
     open: int
@@ -142,4 +151,5 @@ class KnowledgeGapStats(BaseModel):
     ignored: int
     by_intent: list[KnowledgeGapStatItem]
     by_date: list[KnowledgeGapStatItem]
+    by_user: list[KnowledgeGapUserStat]
     top_questions: list[KnowledgeGapStatItem]

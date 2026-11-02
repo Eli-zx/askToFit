@@ -32,20 +32,20 @@ const routes = [
         path: 'knowledge',
         name: 'knowledge',
         component: () => import('@/views/KnowledgeView.vue'),
-        meta: { title: '知识库管理' },
+        meta: { title: '知识库管理', requiresAdmin: true },
       },
       {
         path: 'knowledge/:id',
         name: 'knowledge-detail',
         component: () => import('@/views/KnowledgeDetailView.vue'),
         props: true,
-        meta: { title: '知识库详情' },
+        meta: { title: '知识库详情', requiresAdmin: true },
       },
       {
         path: 'knowledge-gaps',
         name: 'knowledge-gaps',
         component: () => import('@/views/KnowledgeGapView.vue'),
-        meta: { title: '知识缺口运营' },
+        meta: { title: '知识缺口运营', requiresAdmin: true },
       },
       {
         path: 'evaluation',
@@ -58,7 +58,7 @@ const routes = [
         name: 'chunk-preview',
         component: () => import('@/views/ChunkPreviewView.vue'),
         props: true,
-        meta: { title: '分块预览' },
+        meta: { title: '分块预览', requiresAdmin: true },
       },
     ],
   },
@@ -76,7 +76,7 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 }),
 })
 
-router.beforeEach(async (to) => {
+export async function authGuard(to) {
   const auth = useAuthStore()
 
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
@@ -106,6 +106,8 @@ router.beforeEach(async (to) => {
     ? `${to.meta.title} · AskToFit`
     : 'AskToFit · 售前智能导购'
   return true
-})
+}
+
+router.beforeEach(authGuard)
 
 export default router

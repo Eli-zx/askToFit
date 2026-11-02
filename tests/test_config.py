@@ -63,6 +63,90 @@ def test_strategy_and_bm25_env_are_parsed(monkeypatch) -> None:
     assert settings.retrieval_degraded_cache_ttl == 15
 
 
+def test_rerank_tuning_env_is_parsed(monkeypatch) -> None:
+    monkeypatch.setenv("RERANK_CANDIDATE_K", "6")
+    monkeypatch.setenv("RERANK_PASSAGE_CHARS", "240")
+    monkeypatch.setenv("RERANK_MAX_LENGTH", "192")
+    monkeypatch.setenv("RERANK_TIMEOUT_SECONDS", "4.5")
+    monkeypatch.setenv("RERANK_BATCH_SIZE", "2")
+
+    settings = Settings()
+
+    assert settings.rerank_candidate_k == 6
+    assert settings.rerank_passage_chars == 240
+    assert settings.rerank_max_length == 192
+    assert settings.rerank_timeout_seconds == 4.5
+    assert settings.rerank_batch_size == 2
+
+
+def test_concurrency_and_capacity_env_is_parsed(monkeypatch) -> None:
+    monkeypatch.setenv("PASSWORD_HASH_CONCURRENCY", "3")
+    monkeypatch.setenv("LLM_QUEUE_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv("RERANK_MAX_CONCURRENT", "2")
+    monkeypatch.setenv("BM25_MAX_CONCURRENT_SEARCHES", "4")
+    monkeypatch.setenv("BM25_MAX_TOTAL_CHUNKS", "8000")
+    monkeypatch.setenv("BM25_MAX_INDEXED_KBS", "5")
+    monkeypatch.setenv("RETRIEVAL_SINGLEFLIGHT", "false")
+    monkeypatch.setenv("CACHE_TTL_JITTER", "0.25")
+
+    settings = Settings()
+
+    assert settings.password_hash_concurrency == 3
+    assert settings.llm_queue_timeout_seconds == 2.5
+    assert settings.rerank_max_concurrent == 2
+    assert settings.bm25_max_concurrent_searches == 4
+    assert settings.bm25_max_total_chunks == 8000
+    assert settings.bm25_max_indexed_kbs == 5
+    assert settings.retrieval_singleflight is False
+    assert settings.cache_ttl_jitter == 0.25
+
+
+def test_demo_capacity_and_admin_channel_env_is_parsed(monkeypatch) -> None:
+    monkeypatch.setenv("DB_POOL_SIZE", "20")
+    monkeypatch.setenv("DB_MAX_OVERFLOW", "40")
+    monkeypatch.setenv("DB_POOL_TIMEOUT", "8")
+    monkeypatch.setenv("RATE_LIMIT_REGISTER_REQUESTS", "500")
+    monkeypatch.setenv("MAX_CONCURRENT_LLM", "16")
+    monkeypatch.setenv("LLM_ADMIN_SLOTS", "4")
+    monkeypatch.setenv("LLM_ADMIN_QUEUE_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv(
+        "CORS_ORIGINS",
+        "https://demo.example.com, http://localhost:4173,http://localhost:4173",
+    )
+
+    settings = Settings()
+
+    assert settings.db_pool_size == 20
+    assert settings.db_max_overflow == 40
+    assert settings.db_pool_timeout == 8.0
+    assert settings.rate_limit_register_requests == 500
+    assert settings.max_concurrent_llm == 16
+    assert settings.llm_admin_slots == 4
+    assert settings.llm_admin_queue_timeout_seconds == 30.0
+    assert settings.cors_origins == (
+        "https://demo.example.com",
+        "http://localhost:4173",
+    )
+
+
+def test_eval_min_meaningful_samples_env_is_parsed(monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_MIN_MEANINGFUL_SAMPLES", "25")
+
+    settings = Settings()
+
+    assert settings.eval_min_meaningful_samples == 25
+
+
+def test_model_warmup_interval_env_is_parsed(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_WARMUP_INTERVAL_SECONDS", "120")
+    monkeypatch.setenv("STRATEGY_TIMEOUT_SECONDS", "3.5")
+
+    settings = Settings()
+
+    assert settings.model_warmup_interval_seconds == 120.0
+    assert settings.strategy_timeout_seconds == 3.5
+
+
 def test_admin_usernames_split_deduplicate_and_trim(monkeypatch) -> None:
     monkeypatch.setenv("ADMIN_USERNAMES", " Alice, bob ,bob,, ")
 
@@ -80,6 +164,27 @@ def test_admin_usernames_split_deduplicate_and_trim(monkeypatch) -> None:
         ("STRATEGY_MAX_SUBQUERIES", "0", "STRATEGY_MAX_SUBQUERIES"),
         ("RRF_K", "0", "RRF_K"),
         ("RETRIEVAL_DEGRADED_CACHE_TTL", "-1", "RETRIEVAL_DEGRADED_CACHE_TTL"),
+        ("MODEL_WARMUP_INTERVAL_SECONDS", "-1", "MODEL_WARMUP_INTERVAL_SECONDS"),
+        ("RERANK_CANDIDATE_K", "0", "RERANK_CANDIDATE_K"),
+        ("RERANK_PASSAGE_CHARS", "10", "RERANK_PASSAGE_CHARS"),
+        ("RERANK_MAX_LENGTH", "16", "RERANK_MAX_LENGTH"),
+        ("RERANK_TIMEOUT_SECONDS", "-1", "RERANK_TIMEOUT_SECONDS"),
+        ("RERANK_BATCH_SIZE", "0", "RERANK_BATCH_SIZE"),
+        ("RERANK_MAX_CONCURRENT", "0", "RERANK_MAX_CONCURRENT"),
+        ("BM25_MAX_CONCURRENT_SEARCHES", "0", "BM25_MAX_CONCURRENT_SEARCHES"),
+        ("BM25_MAX_TOTAL_CHUNKS", "0", "BM25_MAX_TOTAL_CHUNKS"),
+        ("BM25_MAX_INDEXED_KBS", "0", "BM25_MAX_INDEXED_KBS"),
+        ("CACHE_TTL_JITTER", "1.0", "CACHE_TTL_JITTER"),
+        ("PASSWORD_HASH_CONCURRENCY", "0", "PASSWORD_HASH_CONCURRENCY"),
+        ("LLM_QUEUE_TIMEOUT_SECONDS", "-1", "LLM_QUEUE_TIMEOUT_SECONDS"),
+        ("LLM_ADMIN_QUEUE_TIMEOUT_SECONDS", "-1", "LLM_ADMIN_QUEUE_TIMEOUT_SECONDS"),
+        ("LLM_ADMIN_SLOTS", "0", "LLM_ADMIN_SLOTS"),
+        ("MAX_CONCURRENT_LLM", "0", "MAX_CONCURRENT_LLM"),
+        ("DB_POOL_SIZE", "0", "DB_POOL_SIZE"),
+        ("DB_MAX_OVERFLOW", "-1", "DB_MAX_OVERFLOW"),
+        ("DB_POOL_TIMEOUT", "0", "DB_POOL_TIMEOUT"),
+        ("RATE_LIMIT_REGISTER_REQUESTS", "0", "RATE_LIMIT_REGISTER_REQUESTS"),
+        ("EVAL_MIN_MEANINGFUL_SAMPLES", "0", "EVAL_MIN_MEANINGFUL_SAMPLES"),
     ],
 )
 def test_invalid_new_settings_are_rejected(monkeypatch, name, value, field) -> None:

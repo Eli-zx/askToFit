@@ -11,16 +11,17 @@ defineProps({
     <span class="brand__mark" :style="{ width: `${size}px`, height: `${size}px` }">
       <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
         <path
-          d="M20 7.5c1.4 5.4 4.1 8.1 9.5 9.5-5.4 1.4-8.1 4.1-9.5 9.5-1.4-5.4-4.1-8.1-9.5-9.5 5.4-1.4 8.1-4.1 9.5-9.5Z"
-          fill="currentColor"
+          d="M13 24.6 20 14.4l7 10.2M16.2 20.6h7.6M12.6 29.2h14.8"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="square"
         />
-        <circle cx="29.4" cy="10.6" r="2.1" fill="currentColor" opacity="0.7" />
-        <circle cx="10.8" cy="28.9" r="1.6" fill="currentColor" opacity="0.55" />
+        <circle cx="20" cy="9.4" r="1.5" fill="currentColor" />
       </svg>
     </span>
     <span v-if="!compact" class="brand__type">
       <strong>Ask<span>ToFit</span></strong>
-      <small>售前智能导购</small>
+      <small>Presales Atelier</small>
     </span>
   </div>
 </template>
@@ -29,36 +30,36 @@ defineProps({
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 11px;
   color: var(--atf-ink);
+  gap: 11px;
 }
 
 .brand__mark {
   display: grid;
   flex: none;
-  color: #fff;
-  background: linear-gradient(135deg, #5b5bd6 4%, #8b7cf6 58%, #2dd4bf 130%);
-  border-radius: 12px;
-  box-shadow: 0 8px 18px rgba(91, 91, 214, 0.3);
+  color: var(--atf-on-brand);
+  background: var(--atf-brand);
+  border-radius: 2px;
   place-items: center;
 }
 
 .brand__mark svg {
-  width: 78%;
-  height: 78%;
+  width: 82%;
+  height: 82%;
 }
 
 .brand__type {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   line-height: 1;
+  gap: 4px;
 }
 
 .brand__type strong {
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  font-family: var(--atf-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .brand__type strong span {
@@ -66,22 +67,28 @@ defineProps({
 }
 
 .brand__type small {
-  margin-top: 4px;
   color: var(--atf-muted);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
 }
 
 .brand--light {
-  color: #fff;
+  color: var(--atf-story-ink);
+}
+
+.brand--light .brand__mark {
+  color: var(--atf-brand);
+  background: var(--atf-story-ink);
 }
 
 .brand--light .brand__type strong span {
-  color: #d9d6ff;
+  color: var(--atf-story-accent);
 }
 
 .brand--light .brand__type small {
-  color: rgba(255, 255, 255, 0.62);
+  color: var(--atf-story-soft);
 }
 </style>

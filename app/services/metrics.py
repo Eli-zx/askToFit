@@ -25,6 +25,7 @@ _LATENCY_BUCKETS: tuple[float, ...] = (
 
 _lock = threading.Lock()
 _counters: dict[tuple[str, tuple[tuple[str, str], ...]], float] = defaultdict(float)
+_gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
 _histograms: dict[
     tuple[str, tuple[tuple[str, str], ...]], dict[str, Any]
 ] = {}
@@ -47,6 +48,13 @@ def inc(name: str, labels: dict[str, Any] | None = None, value: float = 1.0) -> 
     key = (name, _normalize_labels(labels))
     with _lock:
         _counters[key] += value
+
+
+def set_gauge(name: str, value: float, labels: dict[str, Any] | None = None) -> None:
+    """设置瞬时值（如当前占用槽位、队列长度）。"""
+    key = (name, _normalize_labels(labels))
+    with _lock:
+        _gauges[key] = value
 
 
 def observe(name: str, value: float, labels: dict[str, Any] | None = None) -> None:
@@ -73,6 +81,7 @@ def render_prometheus() -> str:
     lines: list[str] = []
     with _lock:
         counters = dict(_counters)
+        gauges = dict(_gauges)
         histograms = {
             key: {
                 "buckets": list(value["buckets"]),
@@ -83,6 +92,9 @@ def render_prometheus() -> str:
         }
 
     for (name, labels), value in sorted(counters.items()):
+        lines.append(f"{name}{_format_labels(labels)} {value:g}")
+
+    for (name, labels), value in sorted(gauges.items()):
         lines.append(f"{name}{_format_labels(labels)} {value:g}")
 
     for (name, labels), histogram in sorted(histograms.items()):
@@ -104,4 +116,5 @@ def reset() -> None:
     """测试使用：清空所有指标。"""
     with _lock:
         _counters.clear()
+        _gauges.clear()
         _histograms.clear()

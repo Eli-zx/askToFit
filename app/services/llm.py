@@ -10,6 +10,12 @@ from dataclasses import dataclass
 
 from app.core.logger import get_logger
 from app.services.metrics import inc
+from app.services.priority import (
+    PRIORITY_ADMIN,
+    PRIORITY_NORMAL,
+    PriorityGate,
+    normalize_priority,
+)
 from config import AVAILABLE_MODELS, Config, get_api_model, get_model_settings
 
 logger = get_logger(__name__)
@@ -28,7 +34,9 @@ class _CircuitState:
 class LLMService:
     def __init__(self) -> None:
         self._clients: dict[str, object] = {}
-        self._semaphore = asyncio.Semaphore(max(1, Config.max_concurrent_llm))
+        # 普通 / 管理员双通道；保留 _semaphore 作为普通通道别名，兼容既有测试与调用
+        self._gate = PriorityGate()
+        self._semaphore = self._gate.normal
         self._circuits: dict[str, _CircuitState] = {}
 
     @staticmethod
@@ -64,7 +72,14 @@ class LLMService:
     def _circuit(self, model_name: str) -> _CircuitState:
         return self._circuits.setdefault(model_name, _CircuitState())
 
-    def _ensure_circuit_closed(self, model_name: str) -> None:
+    def _ensure_circuit_closed(
+        self,
+        model_name: str,
+        priority: str = PRIORITY_NORMAL,
+    ) -> None:
+        # 普通流量把服务打到熔断后，管理员仍可尝试；管理员的成败照常计入熔断状态
+        if normalize_priority(priority) == PRIORITY_ADMIN:
+            return
         state = self._circuit(model_name)
         if state.opened_at is None:
             return
@@ -107,6 +122,39 @@ class LLMService:
             return exc.status_code == 429 or exc.status_code >= 500
         return False
 
+    async def _acquire_slot(
+        self,
+        model_name: str,
+        priority: str = PRIORITY_NORMAL,
+    ) -> str:
+        """获取并发槽位；排队超时直接失败，避免请求无限期挂起。"""
+        normalized = normalize_priority(priority)
+        if normalized == PRIORITY_ADMIN:
+            timeout = float(Config.llm_admin_queue_timeout_seconds)
+        else:
+            timeout = float(Config.llm_queue_timeout_seconds)
+        try:
+            await self._gate.acquire(
+                normalized,
+                timeout=None if timeout <= 0 else timeout,
+            )
+        except TimeoutError:
+            inc(
+                "asktofit_llm_requests_total",
+                {"model": model_name, "status": "queue_timeout"},
+            )
+            logger.warning(
+                "大模型排队超时 model=%s priority=%s 等待=%.1fs"
+                "（app/services/llm.py:LLMService._acquire_slot）",
+                model_name,
+                normalized,
+                timeout,
+            )
+            if normalized == PRIORITY_ADMIN:
+                raise LLMError("管理员通道繁忙，请稍后重试") from None
+            raise LLMError("当前咨询较多，请稍后重试") from None
+        return normalized
+
     @staticmethod
     async def _backoff(attempt: int) -> None:
         base = max(0.05, Config.llm_retry_backoff_seconds)
@@ -130,35 +178,35 @@ class LLMService:
         temperature: float,
         top_p: float,
         max_tokens: int,
+        priority: str = PRIORITY_NORMAL,
     ) -> AsyncIterator[str]:
         client = self._get_client(model_name)
         api_model = get_api_model(model_name)
         attempts = max(1, Config.llm_max_retries)
         emitted = False
+        priority = normalize_priority(priority)
 
         for attempt in range(1, attempts + 1):
-            self._ensure_circuit_closed(model_name)
+            self._ensure_circuit_closed(model_name, priority)
+            # 排队超时在进入重试逻辑前直接抛出，避免被当成可重试错误放大请求
+            await self._acquire_slot(model_name, priority)
             try:
-                async with self._semaphore:
-                    stream = await client.chat.completions.create(
-                        model=api_model,
-                        messages=messages,  # type: ignore[arg-type]
-                        temperature=temperature,
-                        top_p=top_p,
-                        max_tokens=max_tokens,
-                        stream=True,
-                    )
-                    async for chunk in stream:
-                        if not chunk.choices:
-                            continue
-                        delta = chunk.choices[0].delta
-                        content = getattr(delta, "content", None)
-                        if content:
-                            emitted = True
-                            yield content
-                self._record_success(model_name)
-                inc("asktofit_llm_requests_total", {"model": model_name, "status": "success"})
-                return
+                stream = await client.chat.completions.create(
+                    model=api_model,
+                    messages=messages,  # type: ignore[arg-type]
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    stream=True,
+                )
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        emitted = True
+                        yield content
             except Exception as exc:
                 retryable = self._is_retryable(exc)
                 if emitted:
@@ -192,6 +240,12 @@ class LLMService:
                     exc_info=True,
                 )
                 raise LLMError(self._error_message(exc)) from exc
+            finally:
+                self._gate.release(priority)
+
+            self._record_success(model_name)
+            inc("asktofit_llm_requests_total", {"model": model_name, "status": "success"})
+            return
 
     async def complete(
         self,
@@ -201,29 +255,26 @@ class LLMService:
         top_p: float = 0.8,
         max_tokens: int = 256,
         timeout: float | None = None,
+        priority: str = PRIORITY_NORMAL,
     ) -> str:
         client = self._get_client(model_name)
         api_model = get_api_model(model_name)
         attempts = max(1, Config.llm_max_retries)
+        priority = normalize_priority(priority)
 
         for attempt in range(1, attempts + 1):
-            self._ensure_circuit_closed(model_name)
+            self._ensure_circuit_closed(model_name, priority)
+            await self._acquire_slot(model_name, priority)
             try:
-                async with self._semaphore:
-                    response = await client.chat.completions.create(
-                        model=api_model,
-                        messages=messages,  # type: ignore[arg-type]
-                        temperature=temperature,
-                        top_p=top_p,
-                        max_tokens=max_tokens,
-                        stream=False,
-                        **({"timeout": timeout} if timeout is not None else {}),
-                    )
-                self._record_success(model_name)
-                inc("asktofit_llm_requests_total", {"model": model_name, "status": "success"})
-                if not response.choices:
-                    return ""
-                return response.choices[0].message.content or ""
+                response = await client.chat.completions.create(
+                    model=api_model,
+                    messages=messages,  # type: ignore[arg-type]
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    stream=False,
+                    **({"timeout": timeout} if timeout is not None else {}),
+                )
             except Exception as exc:
                 if self._is_retryable(exc) and attempt < attempts:
                     inc("asktofit_llm_requests_total", {"model": model_name, "status": "retry"})
@@ -245,6 +296,14 @@ class LLMService:
                     exc_info=True,
                 )
                 raise LLMError(self._error_message(exc)) from exc
+            finally:
+                self._gate.release(priority)
+
+            self._record_success(model_name)
+            inc("asktofit_llm_requests_total", {"model": model_name, "status": "success"})
+            if not response.choices:
+                return ""
+            return response.choices[0].message.content or ""
         return ""
 
     def reset_circuit(self, model_name: str | None = None) -> None:

@@ -34,6 +34,17 @@ const filtered = computed(() => {
   )
 })
 
+// 会话预览只保留纯文本，避免把回答里的 **加粗** 等 Markdown 符号带进侧栏
+function plainPreview(text) {
+  if (!text) return '开始你的第一个问题…'
+  return String(text)
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_~>#]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function handleCommand(command, conversation) {
   if (command === 'rename') {
     ElMessageBox.prompt('输入新的会话名称', '重命名会话', {
@@ -79,7 +90,7 @@ function handleCommand(command, conversation) {
 <template>
   <aside class="sidebar">
     <div class="sidebar__head">
-      <el-button class="sidebar__new" type="primary" @click="emit('create')">
+      <el-button class="sidebar__new" @click="emit('create')">
         <el-icon><Plus /></el-icon>
         新建对话
       </el-button>
@@ -94,7 +105,7 @@ function handleCommand(command, conversation) {
     </div>
 
     <div class="sidebar__label">
-      <span>最近对话</span>
+      <span>最近对话 <em>Conversations</em></span>
       <small>{{ activeConversations.length }}</small>
     </div>
 
@@ -130,7 +141,7 @@ function handleCommand(command, conversation) {
           <span class="sidebar__item-main">
             <span class="sidebar__item-title">{{ conversation.title }}</span>
             <span class="sidebar__item-preview">
-              {{ conversation.last_message || '开始你的第一个问题…' }}
+              {{ plainPreview(conversation.last_message) }}
             </span>
           </span>
           <span class="sidebar__item-side">
@@ -181,15 +192,7 @@ function handleCommand(command, conversation) {
     </div>
 
     <div class="sidebar__footer">
-      <div class="sidebar__footer-icon">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M12 3.5c.8 3.2 2.4 4.8 5.6 5.6-3.2.8-4.8 2.4-5.6 5.6-.8-3.2-2.4-4.8-5.6-5.6 3.2-.8 4.8-2.4 5.6-5.6Z"
-            fill="currentColor"
-          />
-          <path d="M18 15.5l.7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" fill="currentColor" opacity=".5" />
-        </svg>
-      </div>
+      <span class="sidebar__footer-mark">ATF</span>
       <p>回答由知识库检索增强，重要政策请以引用资料为准。</p>
     </div>
   </aside>
@@ -202,80 +205,97 @@ function handleCommand(command, conversation) {
   width: 292px;
   min-width: 292px;
   height: 100%;
-  padding: 20px 14px 16px;
+  padding: 22px 18px 16px;
   overflow: hidden;
-  background: rgba(251, 250, 255, 0.72);
-  border-right: 1px solid var(--atf-line);
-  backdrop-filter: blur(14px);
+  background: var(--atf-surface);
+  border-right: 1px solid var(--atf-line-strong);
 }
 
 .sidebar__head {
-  padding: 0 4px;
+  padding: 0;
 }
 
 .sidebar__new {
   width: 100%;
-  height: 42px;
-  font-size: 13px;
-  border-radius: 12px;
+  height: 40px;
+  color: var(--atf-brand-deep);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  background: transparent;
+  border: 1px solid var(--atf-line-strong);
+  border-radius: var(--atf-radius-sm);
+}
+
+.sidebar__new:hover {
+  color: var(--atf-brand-deep);
+  background: var(--atf-wash);
+  border-color: var(--atf-brand);
+}
+
+.sidebar__new:focus-visible {
+  outline: 1px solid var(--atf-brand);
+  outline-offset: 2px;
 }
 
 .sidebar__search {
-  padding: 0 2px;
   margin-top: 14px;
 }
 
 .sidebar__search :deep(.el-input__wrapper) {
-  height: 38px;
-  background: #fff;
-  border: 1px solid var(--atf-line);
-  box-shadow: none;
+  height: 36px;
+  padding: 0 11px;
+  background: var(--atf-bg);
+  border-radius: var(--atf-radius-sm);
+  box-shadow: 0 0 0 1px var(--atf-line) inset;
 }
 
 .sidebar__label {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  padding: 20px 8px 10px;
-  color: var(--atf-muted);
+  padding: 22px 1px 9px;
+  color: var(--atf-ink);
   font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
 }
 
+.sidebar__label em {
+  margin-left: 6px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: none;
+}
+
 .sidebar__label small {
-  display: grid;
-  min-width: 19px;
-  height: 19px;
-  padding: 0 5px;
   color: var(--atf-brand);
+  font-family: var(--atf-font-mono);
   font-size: 10px;
-  background: var(--atf-brand-soft);
-  border-radius: 999px;
-  place-items: center;
+  font-weight: 500;
 }
 
 .sidebar__archive-toggle {
   display: flex;
   align-items: center;
   width: 100%;
-  padding: 7px 9px;
-  margin-bottom: 6px;
+  padding: 6px 1px;
+  margin-bottom: 4px;
   color: var(--atf-muted);
   font-size: 10.5px;
-  font-weight: 600;
   background: transparent;
   border: 0;
-  border-radius: 9px;
   cursor: pointer;
   gap: 6px;
 }
 
 .sidebar__archive-toggle:hover,
 .sidebar__archive-toggle.is-open {
-  color: var(--atf-brand-deep);
-  background: var(--atf-brand-soft);
+  color: var(--atf-brand);
 }
 
 .sidebar__archive-toggle span {
@@ -289,7 +309,7 @@ function handleCommand(command, conversation) {
 
 .sidebar__list {
   flex: 1;
-  padding: 2px 2px 8px;
+  padding: 0 0 8px;
   overflow-y: auto;
 }
 
@@ -298,41 +318,44 @@ function handleCommand(command, conversation) {
   display: flex;
   align-items: flex-start;
   width: 100%;
-  padding: 12px 11px 12px 13px;
-  margin-bottom: 4px;
+  padding: 11px 8px 11px 11px;
+  margin-bottom: 2px;
   overflow: hidden;
   text-align: left;
   background: transparent;
   border: 0;
-  border-radius: 13px;
+  border-bottom: 1px solid var(--atf-line);
+  border-radius: 0;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: background 0.16s ease;
   gap: 8px;
 }
 
 .sidebar__item:hover {
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--atf-bg);
 }
 
+/* 选中态只留左侧竖线和墨色标题，不用整块填充 */
 .sidebar__item.is-active {
-  background: #fff;
-  box-shadow: 0 6px 20px rgba(43, 38, 95, 0.07);
+  background: transparent;
+}
+
+.sidebar__item.is-active .sidebar__item-title {
+  color: var(--atf-ink);
 }
 
 .sidebar__active-bar {
   position: absolute;
-  top: 50%;
+  top: 0;
+  bottom: 0;
   left: 0;
-  width: 3px;
-  height: 0;
-  background: linear-gradient(180deg, var(--atf-brand), var(--atf-mint));
-  border-radius: 0 3px 3px 0;
-  transform: translateY(-50%);
-  transition: height 0.22s ease;
+  width: 2px;
+  background: transparent;
+  transition: background 0.16s ease;
 }
 
 .sidebar__item.is-active .sidebar__active-bar {
-  height: 26px;
+  background: var(--atf-brand);
 }
 
 .sidebar__item-main {
@@ -346,8 +369,8 @@ function handleCommand(command, conversation) {
 .sidebar__item-title {
   overflow: hidden;
   color: var(--atf-ink-soft);
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 12.5px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -359,8 +382,8 @@ function handleCommand(command, conversation) {
 .sidebar__item-preview {
   overflow: hidden;
   color: var(--atf-muted);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 10.5px;
+  line-height: 1.55;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -375,8 +398,9 @@ function handleCommand(command, conversation) {
 }
 
 .sidebar__item-time {
-  color: #b2b5c8;
-  font-size: 9.5px;
+  color: var(--atf-muted);
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
   white-space: nowrap;
 }
 
@@ -385,7 +409,6 @@ function handleCommand(command, conversation) {
   width: 22px;
   height: 20px;
   color: var(--atf-muted);
-  border-radius: 6px;
   opacity: 0;
   transition: opacity 0.18s ease;
   place-items: center;
@@ -398,7 +421,6 @@ function handleCommand(command, conversation) {
 
 .sidebar__item-menu:hover {
   color: var(--atf-brand);
-  background: var(--atf-brand-soft);
 }
 
 .sidebar__skeleton {
@@ -416,43 +438,40 @@ function handleCommand(command, conversation) {
 }
 
 .sidebar__empty span {
-  font-size: 12.5px;
+  font-family: var(--atf-font-display);
+  font-size: 13px;
   font-weight: 600;
 }
 
 .sidebar__empty small {
-  color: #b2b5c8;
-  font-size: 10.5px;
+  color: var(--atf-muted);
+  font-size: 10px;
 }
 
 .sidebar__footer {
   display: flex;
   align-items: flex-start;
-  padding: 12px 12px 4px;
+  padding: 13px 1px 2px;
   margin-top: 6px;
-  border-top: 1px dashed var(--atf-line);
+  border-top: 1px solid var(--atf-line-strong);
   gap: 9px;
 }
 
-.sidebar__footer-icon {
+.sidebar__footer-mark {
   flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 3px;
+  padding: 1px 4px;
   color: var(--atf-brand);
-  background: var(--atf-brand-soft);
-  border-radius: 7px;
-}
-
-.sidebar__footer-icon svg {
-  width: 100%;
-  height: 100%;
+  font-family: var(--atf-font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  border: 1px solid currentColor;
+  border-radius: 1px;
 }
 
 .sidebar__footer p {
-  color: #a3a6bd;
+  color: var(--atf-muted);
   font-size: 9.5px;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 @media (max-width: 960px) {
